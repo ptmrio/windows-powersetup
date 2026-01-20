@@ -262,9 +262,9 @@ function Get-InstalledWin32Programs {
         try {
             $items = Get-ItemProperty $path -ErrorAction SilentlyContinue |
                 Where-Object {
-                    $_.DisplayName -and
+                    $null -ne $_.DisplayName -and
                     $_.DisplayName.Trim() -ne "" -and
-                    ($_.SystemComponent -ne 1) -and
+                    ($null -eq $_.SystemComponent -or $_.SystemComponent -ne 1) -and
                     -not (Test-ProtectedWin32 $_.DisplayName)
                 }
 
@@ -894,7 +894,7 @@ $yPos += 22
 $script:Win32Checkboxes = @()
 $installedWin32 = Get-InstalledWin32Programs
 
-if ($installedWin32.Count -eq 0) {
+if ($null -eq $installedWin32 -or @($installedWin32).Count -eq 0) {
     $LblNoWin32 = New-Object System.Windows.Forms.Label
     $LblNoWin32.Text = "(No Win32 bloatware detected)"
     $LblNoWin32.Location = New-Object System.Drawing.Point(20, $yPos)
@@ -1294,7 +1294,7 @@ $BtnRun.Add_Click({
         }
 
         # 4. Install Apps
-        $appsToInstall = $script:AppCheckboxes | Where-Object { $_.Checked }
+        $appsToInstall = @($script:AppCheckboxes | Where-Object { $_.Checked })
         if ($appsToInstall.Count -gt 0 -and -not $script:DryRun) {
             Update-WingetSources
         }
@@ -1311,7 +1311,7 @@ $BtnRun.Add_Click({
         }
 
         # 5. Restart Explorer if any settings were changed
-        $settingsChanged = ($script:SettingsCheckboxes | Where-Object { $_.Checked }).Count -gt 0
+        $settingsChanged = @($script:SettingsCheckboxes | Where-Object { $_.Checked }).Count -gt 0
         if ($settingsChanged -and -not $script:DryRun) {
             Restart-Explorer
         }
