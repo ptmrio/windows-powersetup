@@ -1,0 +1,13 @@
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*~
+
+# IDE
+.vscode/
+.idea/
+
+# Plan files
+*.md.backup
