@@ -939,6 +939,70 @@ $BtnDeselectAllBloat.Add_Click({
 })
 $BloatwarePanel.Controls.Add($BtnDeselectAllBloat)
 
+# Remove Selected Bloatware button
+$BtnRemoveBloatware = New-Object System.Windows.Forms.Button
+$BtnRemoveBloatware.Text = "Remove Selected"
+$BtnRemoveBloatware.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
+$BtnRemoveBloatware.Size = New-Object System.Drawing.Size(150, 28)
+$BtnRemoveBloatware.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnRemoveBloatware.ForeColor = [System.Drawing.Color]::White
+$BtnRemoveBloatware.FlatStyle = "Flat"
+$BtnRemoveBloatware.Add_Click({
+    $BtnRemoveBloatware.Enabled = $false
+    $successCount = 0
+    $failCount = 0
+
+    $script:DryRun = $script:ChkDryRun.Checked
+    if ($script:DryRun) {
+        Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
+    }
+
+    try {
+        # Remove AppX Bloatware
+        foreach ($chk in $script:BloatwareCheckboxes) {
+            if ($chk.Checked) {
+                $bloat = $chk.Tag
+                if (Remove-BloatwareApp -PackageName $bloat.PackageName -DisplayName $bloat.Name) {
+                    $successCount++
+                } else {
+                    $failCount++
+                }
+            }
+        }
+
+        # Remove Win32 Bloatware
+        foreach ($chk in $script:Win32Checkboxes) {
+            if ($chk.Checked) {
+                $win32 = $chk.Tag
+                if (Uninstall-Win32Program -DisplayName $win32.DisplayName -UninstallCommand $win32.UninstallCommand) {
+                    $successCount++
+                } else {
+                    $failCount++
+                }
+            }
+        }
+
+        $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        Update-Status "${dryRunMsg}Bloatware removal complete! Success: $successCount, Failed: $failCount"
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "${dryRunMsg}Bloatware removal complete!`n`nSuccessful: $successCount`nFailed: $failCount`n`nLog: $script:LogPath",
+            "Remove Bloatware",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+    catch {
+        Write-Log "Error removing bloatware: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        $BtnRemoveBloatware.Enabled = $true
+        $script:DryRun = $false
+    }
+})
+$BloatwarePanel.Controls.Add($BtnRemoveBloatware)
+
 $TabBloatware.Controls.Add($BloatwarePanel)
 
 # ============================================================================
@@ -1122,6 +1186,72 @@ $ChkStartPins.Tag = "StartPins"
 $ChkStartPins.Enabled = $IsWindows11
 $SettingsPanel.Controls.Add($ChkStartPins)
 $script:SettingsCheckboxes += $ChkStartPins
+$settingsYPos += 40
+
+# Apply Settings button
+$BtnApplySettings = New-Object System.Windows.Forms.Button
+$BtnApplySettings.Text = "Apply Settings"
+$BtnApplySettings.Location = New-Object System.Drawing.Point(480, $settingsYPos)
+$BtnApplySettings.Size = New-Object System.Drawing.Size(150, 28)
+$BtnApplySettings.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnApplySettings.ForeColor = [System.Drawing.Color]::White
+$BtnApplySettings.FlatStyle = "Flat"
+$BtnApplySettings.Add_Click({
+    $BtnApplySettings.Enabled = $false
+    $successCount = 0
+    $failCount = 0
+
+    $script:DryRun = $script:ChkDryRun.Checked
+    if ($script:DryRun) {
+        Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
+    }
+
+    try {
+        foreach ($chk in $script:SettingsCheckboxes) {
+            if ($chk.Checked) {
+                $result = $false
+                switch ($chk.Tag) {
+                    "SearchIcon" { $result = Set-TaskbarSearchIcon }
+                    "MultiMonitor" { $result = Set-TaskbarMultiMonitor }
+                    "CombineWhenFull" { $result = Set-TaskbarCombineWhenFull }
+                    "HideRecommended" { $result = Hide-StartMenuRecommended }
+                    "DisableBing" { $result = Disable-BingSearch }
+                    "PowerSettings" { $result = Set-PowerSettings }
+                    "Clipboard" { $result = Enable-ClipboardHistory }
+                    "StorageSense" { $result = Enable-StorageSense }
+                    "ExplorerThisPC" { $result = Set-ExplorerToThisPC }
+                    "ShowExtensions" { $result = Enable-ShowFileExtensions }
+                    "StartPins" { $result = Set-StartMenuPins }
+                }
+                if ($result) { $successCount++ } else { $failCount++ }
+            }
+        }
+
+        # Restart Explorer to apply changes
+        if (-not $script:DryRun -and $successCount -gt 0) {
+            Restart-Explorer
+        }
+
+        $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        Update-Status "${dryRunMsg}Settings applied! Success: $successCount, Failed: $failCount"
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "${dryRunMsg}Settings applied!`n`nSuccessful: $successCount`nFailed: $failCount`n`nLog: $script:LogPath",
+            "Apply Settings",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+    catch {
+        Write-Log "Error applying settings: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        $BtnApplySettings.Enabled = $true
+        $script:DryRun = $false
+    }
+})
+$SettingsPanel.Controls.Add($BtnApplySettings)
 
 $TabSettings.Controls.Add($SettingsPanel)
 
@@ -1196,104 +1326,26 @@ $BtnDeselectAllApps.Add_Click({
 })
 $InstallAppsPanel.Controls.Add($BtnDeselectAllApps)
 
-$TabInstallApps.Controls.Add($InstallAppsPanel)
-
-# ============================================================================
-# ADD TABS TO TAB CONTROL
-# ============================================================================
-
-$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps))
-$MainForm.Controls.Add($TabControl)
-
-# ============================================================================
-# BOTTOM CONTROLS
-# ============================================================================
-
-# Dry Run checkbox
-$ChkDryRun = New-Object System.Windows.Forms.CheckBox
-$ChkDryRun.Text = "Dry Run (preview only, no changes)"
-$ChkDryRun.Location = New-Object System.Drawing.Point(10, 450)
-$ChkDryRun.Size = New-Object System.Drawing.Size(250, 22)
-$ChkDryRun.Checked = $false
-$ChkDryRun.ForeColor = [System.Drawing.Color]::DarkOrange
-$MainForm.Controls.Add($ChkDryRun)
-
-# Status label
-$script:StatusLabel = New-Object System.Windows.Forms.Label
-$script:StatusLabel.Text = "Ready | $OSName | Log: $script:LogPath"
-$script:StatusLabel.Location = New-Object System.Drawing.Point(10, 510)
-$script:StatusLabel.Size = New-Object System.Drawing.Size(660, 25)
-$script:StatusLabel.BorderStyle = "FixedSingle"
-$MainForm.Controls.Add($script:StatusLabel)
-
-# Run button
-$BtnRun = New-Object System.Windows.Forms.Button
-$BtnRun.Text = "Run Selected Tasks"
-$BtnRun.Location = New-Object System.Drawing.Point(520, 470)
-$BtnRun.Size = New-Object System.Drawing.Size(150, 35)
-$BtnRun.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$BtnRun.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
-$BtnRun.ForeColor = [System.Drawing.Color]::White
-$BtnRun.FlatStyle = "Flat"
-
-$BtnRun.Add_Click({
-    $BtnRun.Enabled = $false
+# Install Selected Apps button
+$BtnInstallApps = New-Object System.Windows.Forms.Button
+$BtnInstallApps.Text = "Install Selected"
+$BtnInstallApps.Location = New-Object System.Drawing.Point(480, ($appYPos + 10))
+$BtnInstallApps.Size = New-Object System.Drawing.Size(150, 28)
+$BtnInstallApps.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnInstallApps.ForeColor = [System.Drawing.Color]::White
+$BtnInstallApps.FlatStyle = "Flat"
+$BtnInstallApps.Enabled = $wingetAvailable
+$BtnInstallApps.Add_Click({
+    $BtnInstallApps.Enabled = $false
     $successCount = 0
     $failCount = 0
 
-    $script:DryRun = $ChkDryRun.Checked
+    $script:DryRun = $script:ChkDryRun.Checked
     if ($script:DryRun) {
         Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
-        Update-Status "DRY RUN MODE - Previewing actions..."
     }
 
     try {
-        # 1. Remove AppX Bloatware
-        foreach ($chk in $script:BloatwareCheckboxes) {
-            if ($chk.Checked) {
-                $bloat = $chk.Tag
-                if (Remove-BloatwareApp -PackageName $bloat.PackageName -DisplayName $bloat.Name) {
-                    $successCount++
-                } else {
-                    $failCount++
-                }
-            }
-        }
-
-        # 2. Remove Win32 Bloatware
-        foreach ($chk in $script:Win32Checkboxes) {
-            if ($chk.Checked) {
-                $win32 = $chk.Tag
-                if (Uninstall-Win32Program -DisplayName $win32.DisplayName -UninstallCommand $win32.UninstallCommand) {
-                    $successCount++
-                } else {
-                    $failCount++
-                }
-            }
-        }
-
-        # 3. Apply Settings
-        foreach ($chk in $script:SettingsCheckboxes) {
-            if ($chk.Checked) {
-                $result = $false
-                switch ($chk.Tag) {
-                    "SearchIcon" { $result = Set-TaskbarSearchIcon }
-                    "MultiMonitor" { $result = Set-TaskbarMultiMonitor }
-                    "CombineWhenFull" { $result = Set-TaskbarCombineWhenFull }
-                    "HideRecommended" { $result = Hide-StartMenuRecommended }
-                    "DisableBing" { $result = Disable-BingSearch }
-                    "PowerSettings" { $result = Set-PowerSettings }
-                    "Clipboard" { $result = Enable-ClipboardHistory }
-                    "StorageSense" { $result = Enable-StorageSense }
-                    "ExplorerThisPC" { $result = Set-ExplorerToThisPC }
-                    "ShowExtensions" { $result = Enable-ShowFileExtensions }
-                    "StartPins" { $result = Set-StartMenuPins }
-                }
-                if ($result) { $successCount++ } else { $failCount++ }
-            }
-        }
-
-        # 4. Install Apps
         $appsToInstall = @($script:AppCheckboxes | Where-Object { $_.Checked })
         if ($appsToInstall.Count -gt 0 -and -not $script:DryRun) {
             Update-WingetSources
@@ -1310,38 +1362,56 @@ $BtnRun.Add_Click({
             }
         }
 
-        # 5. Restart Explorer if any settings were changed
-        $settingsChanged = @($script:SettingsCheckboxes | Where-Object { $_.Checked }).Count -gt 0
-        if ($settingsChanged -and -not $script:DryRun) {
-            Restart-Explorer
-        }
-
         $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
-        Update-Status "${dryRunMsg}Complete! Success: $successCount, Failed: $failCount"
+        Update-Status "${dryRunMsg}App installation complete! Success: $successCount, Failed: $failCount"
 
         [System.Windows.Forms.MessageBox]::Show(
-            "${dryRunMsg}Setup complete!`n`nSuccessful operations: $successCount`nFailed operations: $failCount`n`nLog file: $script:LogPath",
-            "Windows PC Setup Utility",
+            "${dryRunMsg}App installation complete!`n`nSuccessful: $successCount`nFailed: $failCount`n`nLog: $script:LogPath",
+            "Install Apps",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
     }
     catch {
-        Write-Log "Critical error: $_" "ERROR"
-        [System.Windows.Forms.MessageBox]::Show(
-            "An error occurred: $_`n`nCheck log file: $script:LogPath",
-            "Error",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error
-        )
+        Write-Log "Error installing apps: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     finally {
-        $BtnRun.Enabled = $true
+        $BtnInstallApps.Enabled = $wingetAvailable
         $script:DryRun = $false
     }
 })
+$InstallAppsPanel.Controls.Add($BtnInstallApps)
 
-$MainForm.Controls.Add($BtnRun)
+$TabInstallApps.Controls.Add($InstallAppsPanel)
+
+# ============================================================================
+# ADD TABS TO TAB CONTROL
+# ============================================================================
+
+$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps))
+$MainForm.Controls.Add($TabControl)
+
+# ============================================================================
+# BOTTOM CONTROLS
+# ============================================================================
+
+# Dry Run checkbox (script-scope so tab buttons can access it)
+$script:ChkDryRun = New-Object System.Windows.Forms.CheckBox
+$script:ChkDryRun.Text = "Dry Run (preview only, no changes)"
+$script:ChkDryRun.Location = New-Object System.Drawing.Point(10, 450)
+$script:ChkDryRun.Size = New-Object System.Drawing.Size(250, 22)
+$script:ChkDryRun.Checked = $false
+$script:ChkDryRun.ForeColor = [System.Drawing.Color]::DarkOrange
+$MainForm.Controls.Add($script:ChkDryRun)
+
+# Status label
+$script:StatusLabel = New-Object System.Windows.Forms.Label
+$script:StatusLabel.Text = "Ready | $OSName | Log: $script:LogPath"
+$script:StatusLabel.Location = New-Object System.Drawing.Point(10, 510)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(660, 25)
+$script:StatusLabel.BorderStyle = "FixedSingle"
+$MainForm.Controls.Add($script:StatusLabel)
 
 # Open Log button
 $BtnOpenLog = New-Object System.Windows.Forms.Button
