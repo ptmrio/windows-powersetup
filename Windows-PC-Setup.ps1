@@ -59,6 +59,37 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # ============================================================================
+# UI CONSTANTS
+# ============================================================================
+
+$script:UI = @{
+    # Colors
+    AccentColor      = [System.Drawing.Color]::FromArgb(0, 120, 215)
+    AccentHover      = [System.Drawing.Color]::FromArgb(0, 102, 183)
+    AccentPressed    = [System.Drawing.Color]::FromArgb(0, 84, 153)
+    DisabledBg       = [System.Drawing.Color]::FromArgb(204, 204, 204)
+    DisabledFg       = [System.Drawing.Color]::FromArgb(136, 136, 136)
+    WarningOrange    = [System.Drawing.Color]::FromArgb(255, 140, 0)
+    WarningBg        = [System.Drawing.Color]::FromArgb(255, 250, 230)
+    WarningBorder    = [System.Drawing.Color]::FromArgb(255, 193, 7)
+    SuccessGreen     = [System.Drawing.Color]::FromArgb(40, 167, 69)
+    ErrorRed         = [System.Drawing.Color]::FromArgb(220, 53, 69)
+    SectionHeader    = [System.Drawing.Color]::FromArgb(51, 51, 51)
+    SubtleGray       = [System.Drawing.Color]::FromArgb(128, 128, 128)
+
+    # Spacing
+    ItemSpacing      = 26
+    SectionSpacing   = 35
+    CheckboxIndent   = 30
+
+    # Sizes
+    CheckboxHeight   = 26
+    ButtonHeight     = 32
+    HeaderFontSize   = 10
+    BodyFontSize     = 10
+}
+
+# ============================================================================
 # DEFINE BLOATWARE LISTS
 # ============================================================================
 
@@ -226,6 +257,163 @@ function Update-Status {
         [System.Windows.Forms.Application]::DoEvents()
     }
     Write-Log $Message
+}
+
+# ============================================================================
+# UI HELPER FUNCTIONS
+# ============================================================================
+
+function Add-ButtonHoverEffect {
+    param([System.Windows.Forms.Button]$Button)
+
+    $Button.Add_MouseEnter({
+        if ($this.Enabled) {
+            $this.BackColor = $script:UI.AccentHover
+        }
+    })
+
+    $Button.Add_MouseLeave({
+        if ($this.Enabled) {
+            $this.BackColor = $script:UI.AccentColor
+        }
+    })
+
+    $Button.Add_MouseDown({
+        if ($this.Enabled) {
+            $this.BackColor = $script:UI.AccentPressed
+        }
+    })
+
+    $Button.Add_MouseUp({
+        if ($this.Enabled) {
+            $this.BackColor = $script:UI.AccentHover
+        }
+    })
+}
+
+function Set-ButtonDisabled {
+    param(
+        [System.Windows.Forms.Button]$Button,
+        [string]$WorkingText = "Working..."
+    )
+    $Button.Tag = @{ OriginalText = $Button.Text; OriginalBg = $Button.BackColor }
+    $Button.Text = $WorkingText
+    $Button.BackColor = $script:UI.DisabledBg
+    $Button.ForeColor = $script:UI.DisabledFg
+    $Button.Enabled = $false
+}
+
+function Set-ButtonEnabled {
+    param([System.Windows.Forms.Button]$Button)
+    if ($Button.Tag -and $Button.Tag.OriginalText) {
+        $Button.Text = $Button.Tag.OriginalText
+    }
+    $Button.BackColor = $script:UI.AccentColor
+    $Button.ForeColor = [System.Drawing.Color]::White
+    $Button.Enabled = $true
+}
+
+function New-SectionHeader {
+    param(
+        [System.Windows.Forms.Panel]$Panel,
+        [string]$Text,
+        [int]$YPosition,
+        [int]$XPosition = 20
+    )
+
+    $header = New-Object System.Windows.Forms.Label
+    $header.Text = $Text
+    $header.Location = New-Object System.Drawing.Point($XPosition, $YPosition)
+    $header.Size = New-Object System.Drawing.Size(600, 24)
+    $header.Font = New-Object System.Drawing.Font("Segoe UI Semibold", $script:UI.HeaderFontSize)
+    $header.ForeColor = $script:UI.SectionHeader
+    $Panel.Controls.Add($header)
+
+    # Subtle underline separator
+    $separator = New-Object System.Windows.Forms.Label
+    $separator.Location = New-Object System.Drawing.Point($XPosition, ($YPosition + 22))
+    $separator.Size = New-Object System.Drawing.Size(600, 1)
+    $separator.BackColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $Panel.Controls.Add($separator)
+
+    return ($YPosition + 28)
+}
+
+function New-IntroText {
+    param(
+        [System.Windows.Forms.Panel]$Panel,
+        [string]$Text,
+        [int]$YPosition,
+        [int]$XPosition = 20
+    )
+
+    $intro = New-Object System.Windows.Forms.Label
+    $intro.Text = $Text
+    $intro.Location = New-Object System.Drawing.Point($XPosition, $YPosition)
+    $intro.Size = New-Object System.Drawing.Size(610, 36)
+    $intro.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $intro.ForeColor = $script:UI.SubtleGray
+    $Panel.Controls.Add($intro)
+
+    return ($YPosition + 40)
+}
+
+function Update-SelectionCount {
+    param(
+        [System.Windows.Forms.Label]$Label,
+        [array]$Checkboxes,
+        [string]$ItemType = "item"
+    )
+    $count = @($Checkboxes | Where-Object { $_.Checked }).Count
+    $plural = if ($count -eq 1) { "" } else { "s" }
+    $Label.Text = "$count $ItemType$plural selected"
+}
+
+function Update-Progress {
+    param(
+        [int]$Current,
+        [int]$Total,
+        [string]$CurrentItem = ""
+    )
+    if ($script:ProgressBar -and $script:ProgressLabel) {
+        $script:ProgressBar.Maximum = $Total
+        $script:ProgressBar.Value = [Math]::Min($Current, $Total)
+        $script:ProgressBar.Visible = $true
+        $script:ProgressLabel.Text = "Processing $Current of $Total$(if ($CurrentItem) { ": $CurrentItem" })"
+        $script:ProgressLabel.Visible = $true
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
+function Hide-Progress {
+    if ($script:ProgressBar) {
+        $script:ProgressBar.Visible = $false
+        $script:ProgressBar.Value = 0
+    }
+    if ($script:ProgressLabel) {
+        $script:ProgressLabel.Visible = $false
+    }
+}
+
+function Show-ConfirmationDialog {
+    param(
+        [string]$Title,
+        [int]$SelectedCount,
+        [string]$ActionType,
+        [bool]$IsDryRun
+    )
+
+    $dryRunNote = if ($IsDryRun) { "`n`n[DRY RUN MODE - No actual changes will be made]" } else { "" }
+    $message = "You are about to $ActionType $SelectedCount item(s).$dryRunNote`n`nDo you want to continue?"
+
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        $message,
+        $Title,
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    return ($result -eq [System.Windows.Forms.DialogResult]::Yes)
 }
 
 # ============================================================================
@@ -440,27 +628,52 @@ function Install-WingetApp {
         return $true
     }
 
-    try {
-        Update-Status "Installing $DisplayName..."
-        $result = winget install --id $WingetId --silent --accept-package-agreements --accept-source-agreements 2>&1
+    $maxRetries = 3
+    $retryDelay = 5
 
-        if ($LASTEXITCODE -eq 0) {
-            Write-Log "Successfully installed: $DisplayName" "SUCCESS"
-            return $true
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) {
+                Update-Status "Installing $DisplayName (attempt $attempt of $maxRetries)..."
+                Start-Sleep -Seconds $retryDelay
+            } else {
+                Update-Status "Installing $DisplayName..."
+            }
+
+            # Use --disable-interactivity for cleaner automation
+            $result = winget install --id $WingetId --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Successfully installed: $DisplayName" "SUCCESS"
+                return $true
+            }
+            elseif ($LASTEXITCODE -eq -1978335189) {
+                Write-Log "$DisplayName is already installed/up to date" "INFO"
+                return $true
+            }
+            elseif ($LASTEXITCODE -eq -2147012889) {
+                # Network timeout error - retry
+                Write-Log "Network timeout for $DisplayName (attempt $attempt of $maxRetries)" "WARN"
+                if ($attempt -eq $maxRetries) {
+                    Write-Log "Failed to install $DisplayName after $maxRetries attempts - network timeout. Check internet connection or try again later." "ERROR"
+                    return $false
+                }
+                # Continue to next retry
+            }
+            else {
+                Write-Log "Failed to install $DisplayName (Exit code: $LASTEXITCODE)" "ERROR"
+                return $false
+            }
         }
-        elseif ($LASTEXITCODE -eq -1978335189) {
-            Write-Log "$DisplayName is already installed/up to date" "INFO"
-            return $true
-        }
-        else {
-            Write-Log "Failed to install $DisplayName (Exit code: $LASTEXITCODE)" "ERROR"
-            return $false
+        catch {
+            Write-Log "Error installing $DisplayName : $_" "ERROR"
+            if ($attempt -eq $maxRetries) {
+                return $false
+            }
         }
     }
-    catch {
-        Write-Log "Error installing $DisplayName : $_" "ERROR"
-        return $false
-    }
+
+    return $false
 }
 
 # ============================================================================
@@ -671,7 +884,7 @@ function Enable-ClipboardHistory {
 
 function Enable-StorageSense {
     if ($script:DryRun) {
-        Write-Log "Would enable Storage Sense (Downloads: 14 days, Recycle Bin: 30 days)" "INFO"
+        Write-Log "Would enable Storage Sense (Daily cleanup: Downloads 14 days, Recycle Bin 30 days)" "INFO"
         return $true
     }
 
@@ -686,8 +899,8 @@ function Enable-StorageSense {
         # Enable Storage Sense
         Set-ItemProperty -Path $storagePath -Name "01" -Type DWord -Value 1
 
-        # Run Storage Sense automatically (every month = 30)
-        Set-ItemProperty -Path $storagePath -Name "2048" -Type DWord -Value 30
+        # Run Storage Sense automatically (every day = 1)
+        Set-ItemProperty -Path $storagePath -Name "2048" -Type DWord -Value 1
 
         # Enable Recycle Bin cleanup
         Set-ItemProperty -Path $storagePath -Name "08" -Type DWord -Value 1
@@ -701,7 +914,7 @@ function Enable-StorageSense {
         # Downloads: Delete files older than 14 days
         Set-ItemProperty -Path $storagePath -Name "512" -Type DWord -Value 14
 
-        Write-Log "Storage Sense enabled: Downloads cleanup 14 days, Recycle Bin cleanup 30 days" "SUCCESS"
+        Write-Log "Storage Sense enabled: Daily cleanup - Downloads 14 days, Recycle Bin 30 days" "SUCCESS"
         return $true
     }
     catch {
@@ -756,6 +969,94 @@ function Enable-ShowFileExtensions {
     }
 }
 
+function Clear-ExplorerQuickAccess {
+    if ($script:DryRun) {
+        Write-Log "Would clean Explorer Quick Access (keep only Desktop and Downloads)" "INFO"
+        return $true
+    }
+
+    try {
+        Update-Status "Cleaning Explorer Quick Access pinned folders..."
+
+        # Load Shell COM object for Quick Access manipulation
+        $shell = New-Object -ComObject Shell.Application
+
+        # Get the Quick Access namespace (CLSID for Quick Access)
+        $quickAccess = $shell.Namespace("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}")
+
+        if ($null -eq $quickAccess) {
+            Write-Log "Could not access Quick Access namespace" "WARN"
+            return $false
+        }
+
+        # Folders to KEEP pinned (by name - localized names may vary)
+        $keepFolders = @("Desktop", "Downloads")
+
+        # Get all pinned items
+        $pinnedItems = $quickAccess.Items()
+        $removedCount = 0
+
+        foreach ($item in $pinnedItems) {
+            $itemName = $item.Name
+            $itemPath = $item.Path
+
+            # Check if this is a pinned folder (not a recent file)
+            # Pinned folders have the "isfolder" property
+            $isFolder = $item.IsFolder
+
+            if ($isFolder) {
+                # Check if folder name matches one we want to keep
+                $shouldKeep = $false
+                foreach ($keep in $keepFolders) {
+                    if ($itemName -eq $keep -or $itemPath -like "*\$keep" -or $itemPath -like "*\$keep\") {
+                        $shouldKeep = $true
+                        break
+                    }
+                }
+
+                if (-not $shouldKeep) {
+                    # Get the verbs (context menu actions) for this item
+                    $verbs = $item.Verbs()
+                    foreach ($verb in $verbs) {
+                        # Look for "Unpin from Quick access" or similar (varies by locale)
+                        # The verb name is "unpinfromhome" internally
+                        if ($verb.Name -match "Unpin|Entfernen|L.sen" -or $verb.Name -eq "&Unpin from Quick access") {
+                            $verb.DoIt()
+                            Write-Log "Unpinned from Quick Access: $itemName" "SUCCESS"
+                            $removedCount++
+                            Start-Sleep -Milliseconds 200
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        # Alternative approach: Clear via registry if COM doesn't work well
+        # This clears the "frequent folders" that appear automatically
+        $explorerPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer"
+
+        # Disable "Show frequently used folders in Quick access"
+        Set-ItemProperty -Path $explorerPath -Name "ShowFrequent" -Type DWord -Value 0 -ErrorAction SilentlyContinue
+
+        # Disable "Show recently used files in Quick access"
+        Set-ItemProperty -Path $explorerPath -Name "ShowRecent" -Type DWord -Value 0 -ErrorAction SilentlyContinue
+
+        Write-Log "Explorer Quick Access cleaned. Removed $removedCount items. Kept: Desktop, Downloads" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed to clean Explorer Quick Access: $_" "ERROR"
+        return $false
+    }
+    finally {
+        # Release COM object
+        if ($null -ne $shell) {
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+        }
+    }
+}
+
 function Set-StartMenuPins {
     if (-not $IsWindows11) {
         Write-Log "Start Menu pin layout not applicable for Windows 10 (uses tiles)" "INFO"
@@ -763,42 +1064,53 @@ function Set-StartMenuPins {
     }
 
     if ($script:DryRun) {
-        Write-Log "Would set Start Menu pins to Explorer, Calculator, Snipping Tool only" "INFO"
+        Write-Log "Would reset Start Menu pins (delete start2.bin to reset to defaults)" "INFO"
         return $true
     }
 
     try {
-        Update-Status "Configuring Start Menu pinned apps..."
+        Update-Status "Resetting Start Menu pinned apps..."
 
-        # Windows 11 Start Menu layout is stored in a binary blob
-        # We can use a JSON layout file approach for Windows 11 22H2+
+        # Windows 11 stores Start Menu pins in a binary file that cannot be easily edited
+        # The most reliable approach is to delete the binary layout file to reset to defaults
+        # User will need to manually pin the 3 desired apps after reset
 
-        $layoutPath = "$env:LOCALAPPDATA\Microsoft\Windows\Shell\LayoutModification.json"
+        $startMenuHost = Get-AppxPackage -Name "Microsoft.Windows.StartMenuExperienceHost" -ErrorAction SilentlyContinue
+        if ($startMenuHost) {
+            $startBinPath = Join-Path $env:LOCALAPPDATA "Packages\$($startMenuHost.PackageFamilyName)\LocalState\start2.bin"
 
-        # Create minimal Start layout with only the 3 requested apps
-        $startLayout = @{
-            pinnedList = @(
-                @{ desktopAppLink = "%APPDATA%\Microsoft\Windows\Start Menu\Programs\File Explorer.lnk" }
-                @{ packagedAppId = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" }
-                @{ packagedAppId = "Microsoft.ScreenSketch_8wekyb3d8bbwe!App" }
-            )
+            if (Test-Path $startBinPath) {
+                # Backup existing layout
+                Copy-Item $startBinPath "$startBinPath.backup" -Force -ErrorAction SilentlyContinue
+                Write-Log "Backed up existing Start layout to $startBinPath.backup" "INFO"
+
+                # Stop StartMenuExperienceHost to release file lock
+                Get-Process -Name "StartMenuExperienceHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500
+
+                # Delete the start layout file
+                Remove-Item $startBinPath -Force -ErrorAction SilentlyContinue
+                Write-Log "Deleted Start Menu layout file - pins will reset to defaults on next login" "SUCCESS"
+            }
+            else {
+                Write-Log "Start layout file not found at expected location" "WARN"
+            }
+        }
+        else {
+            Write-Log "StartMenuExperienceHost package not found" "WARN"
         }
 
-        $startLayoutJson = $startLayout | ConvertTo-Json -Depth 10
-
-        # Backup existing layout if present
-        if (Test-Path $layoutPath) {
-            Copy-Item $layoutPath "$layoutPath.backup" -Force -ErrorAction SilentlyContinue
+        # Also clear the LayoutModification.json if it exists (for consistency)
+        $layoutJsonPath = "$env:LOCALAPPDATA\Microsoft\Windows\Shell\LayoutModification.json"
+        if (Test-Path $layoutJsonPath) {
+            Remove-Item $layoutJsonPath -Force -ErrorAction SilentlyContinue
         }
 
-        # Write new layout
-        $startLayoutJson | Out-File -FilePath $layoutPath -Encoding UTF8 -Force
-
-        Write-Log "Start Menu pins configured (Explorer, Calculator, Snipping Tool). May require sign-out to take full effect." "SUCCESS"
+        Write-Log "Start Menu reset complete. After restart/sign-out, please manually pin: Explorer, Calculator, Snipping Tool" "SUCCESS"
         return $true
     }
     catch {
-        Write-Log "Failed to set Start Menu pins: $_" "ERROR"
+        Write-Log "Failed to reset Start Menu pins: $_" "ERROR"
         return $false
     }
 }
@@ -829,11 +1141,18 @@ function Restart-Explorer {
 
 $MainForm = New-Object System.Windows.Forms.Form
 $MainForm.Text = "Windows PC Setup Utility v2.0"
-$MainForm.Size = New-Object System.Drawing.Size(700, 580)
+$MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
 $MainForm.MaximizeBox = $false
-$MainForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$MainForm.Font = New-Object System.Drawing.Font("Segoe UI", $script:UI.BodyFontSize)
+
+# Create tooltip component for the entire form
+$script:MainTooltip = New-Object System.Windows.Forms.ToolTip
+$script:MainTooltip.AutoPopDelay = 10000
+$script:MainTooltip.InitialDelay = 500
+$script:MainTooltip.ReshowDelay = 200
+$script:MainTooltip.ShowAlways = $true
 
 # ============================================================================
 # CREATE TAB CONTROL
@@ -841,55 +1160,103 @@ $MainForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 
 $TabControl = New-Object System.Windows.Forms.TabControl
 $TabControl.Location = New-Object System.Drawing.Point(10, 10)
-$TabControl.Size = New-Object System.Drawing.Size(665, 430)
+$TabControl.Size = New-Object System.Drawing.Size(665, 450)
 
 # ============================================================================
 # TAB 1: BLOATWARE
 # ============================================================================
 
 $TabBloatware = New-Object System.Windows.Forms.TabPage
-$TabBloatware.Text = "Remove Bloatware"
+$TabBloatware.Text = "&Remove Bloatware"
 $TabBloatware.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $BloatwarePanel = New-Object System.Windows.Forms.Panel
 $BloatwarePanel.Dock = "Fill"
 $BloatwarePanel.AutoScroll = $true
 
-$LblBloatwareInfo = New-Object System.Windows.Forms.Label
-$LblBloatwareInfo.Text = "Scanning for installed bloatware..."
-$LblBloatwareInfo.Location = New-Object System.Drawing.Point(20, 10)
-$LblBloatwareInfo.Size = New-Object System.Drawing.Size(600, 20)
-$BloatwarePanel.Controls.Add($LblBloatwareInfo)
+# Introduction text
+$yPos = New-IntroText -Panel $BloatwarePanel -Text "Select pre-installed apps to remove. Pre-checked items are safe for most users. Hover over items for more details." -YPosition 8
+
+# AppX Apps section header
+$yPos = New-SectionHeader -Panel $BloatwarePanel -Text "Store Apps (AppX)" -YPosition $yPos
 
 # Create checkboxes for bloatware dynamically
 $script:BloatwareCheckboxes = @()
 $installedBloatware = Get-InstalledBloatware
 
-$yPos = 40
+# Tooltip descriptions for common apps
+$bloatwareTooltips = @{
+    "Candy Crush Saga" = "Promotional puzzle game - safe to remove"
+    "Candy Crush Soda Saga" = "Promotional puzzle game - safe to remove"
+    "Candy Crush Friends" = "Promotional puzzle game - safe to remove"
+    "Bubble Witch 3 Saga" = "Promotional puzzle game - safe to remove"
+    "TikTok" = "Short-form video app - safe to remove"
+    "Spotify" = "Music streaming app - safe to remove unless you use it"
+    "Netflix" = "Video streaming app - safe to remove unless you use it"
+    "Disney+" = "Video streaming app - safe to remove unless you use it"
+    "Amazon" = "Shopping app - safe to remove"
+    "Prime Video" = "Video streaming app - safe to remove unless you use it"
+    "Facebook" = "Social media app - safe to remove"
+    "Instagram" = "Social media app - safe to remove"
+    "Twitter/X" = "Social media app - safe to remove"
+    "LinkedIn" = "Professional networking app - safe to remove unless you use it"
+    "Duolingo" = "Language learning app - safe to remove unless you use it"
+    "Clipchamp" = "Video editor by Microsoft - safe to remove"
+    "Microsoft Solitaire" = "Card games collection - safe to remove"
+    "Bing News" = "News aggregator - safe to remove"
+    "Bing Weather" = "Weather app - safe to remove"
+    "Bing Finance" = "Finance news app - safe to remove"
+    "Bing Sports" = "Sports news app - safe to remove"
+    "Get Help" = "Microsoft support app - safe to remove"
+    "Get Started (Tips)" = "Windows tips app - safe to remove"
+    "Mixed Reality Portal" = "VR headset app - safe to remove unless you have a VR headset"
+    "3D Viewer" = "3D model viewer - safe to remove"
+    "Office Hub" = "Office promotion app - safe to remove"
+    "People" = "Contacts app - safe to remove"
+    "Skype" = "Video calling app - safe to remove unless you use it"
+    "Groove Music" = "Legacy music player - safe to remove"
+    "Movies & TV" = "Video player - safe to remove"
+    "Feedback Hub" = "Windows feedback app - safe to remove"
+    "Maps" = "Offline maps - safe to remove unless you need offline navigation"
+    "Power Automate" = "Automation tool - safe to remove unless you use it"
+    "Microsoft To Do" = "Task manager - safe to remove unless you use it"
+    "Xbox App" = "Xbox gaming platform - may be needed for some PC games"
+    "Xbox Game Bar" = "Gaming overlay (Win+G) - may be needed for game recording"
+    "Phone Link (Your Phone)" = "Connect Android/iPhone to PC - keep if you use this feature"
+    "Cortana" = "Voice assistant - safe to remove"
+    "Copilot" = "AI assistant - keep if you use it, otherwise safe to remove"
+    "OneDrive" = "Cloud storage - keep if you use Microsoft cloud storage"
+    "Mail and Calendar" = "Email and calendar app - keep if you use it"
+    "Outlook (New)" = "New Outlook app - keep if you use it for email"
+    "OneNote" = "Note-taking app - keep if you use it"
+}
+
 foreach ($bloat in $installedBloatware) {
     $chk = New-Object System.Windows.Forms.CheckBox
     $typeLabel = if ($bloat.Type -eq "Lenovo") { " [Lenovo]" } else { "" }
     $chk.Text = "$($bloat.Name)$typeLabel"
     $chk.Tag = $bloat
-    $chk.Location = New-Object System.Drawing.Point(20, $yPos)
-    $chk.Size = New-Object System.Drawing.Size(600, 22)
+    $chk.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $yPos)
+    $chk.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
     $chk.Checked = $bloat.PreChecked
+
+    # Add tooltip
+    $tooltipText = if ($bloatwareTooltips.ContainsKey($bloat.Name)) { $bloatwareTooltips[$bloat.Name] } else { "Package: $($bloat.PackageName)" }
+    $script:MainTooltip.SetToolTip($chk, $tooltipText)
+
+    # Update selection count on check change
+    $chk.Add_CheckedChanged({
+        Update-SelectionCount -Label $script:BloatwareSelectionLabel -Checkboxes ($script:BloatwareCheckboxes + $script:Win32Checkboxes) -ItemType "app"
+    })
+
     $BloatwarePanel.Controls.Add($chk)
     $script:BloatwareCheckboxes += $chk
-    $yPos += 25
+    $yPos += $script:UI.ItemSpacing
 }
 
-$LblBloatwareInfo.Text = "Found $($installedBloatware.Count) AppX apps (pre-checked = recommended to remove)"
-
-# Add Win32 bloatware section
-$yPos += 15
-$LblWin32 = New-Object System.Windows.Forms.Label
-$LblWin32.Text = "--- Win32 Programs ---"
-$LblWin32.Location = New-Object System.Drawing.Point(20, $yPos)
-$LblWin32.Size = New-Object System.Drawing.Size(600, 20)
-$LblWin32.ForeColor = [System.Drawing.Color]::DarkRed
-$BloatwarePanel.Controls.Add($LblWin32)
-$yPos += 22
+# Win32 Programs section
+$yPos += 10
+$yPos = New-SectionHeader -Panel $BloatwarePanel -Text "Win32 Programs" -YPosition $yPos
 
 $script:Win32Checkboxes = @()
 $installedWin32 = Get-InstalledWin32Programs
@@ -897,32 +1264,51 @@ $installedWin32 = Get-InstalledWin32Programs
 if ($null -eq $installedWin32 -or @($installedWin32).Count -eq 0) {
     $LblNoWin32 = New-Object System.Windows.Forms.Label
     $LblNoWin32.Text = "(No Win32 bloatware detected)"
-    $LblNoWin32.Location = New-Object System.Drawing.Point(20, $yPos)
+    $LblNoWin32.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $yPos)
     $LblNoWin32.Size = New-Object System.Drawing.Size(600, 20)
-    $LblNoWin32.ForeColor = [System.Drawing.Color]::Gray
+    $LblNoWin32.ForeColor = $script:UI.SubtleGray
     $BloatwarePanel.Controls.Add($LblNoWin32)
-    $yPos += 25
+    $yPos += $script:UI.ItemSpacing
 }
 else {
     foreach ($win32 in $installedWin32) {
         $chk = New-Object System.Windows.Forms.CheckBox
-        $chk.Text = "$($win32.DisplayName) [$($win32.Category)]"
+        $chk.Text = "$($win32.DisplayName)"
         $chk.Tag = $win32
-        $chk.Location = New-Object System.Drawing.Point(20, $yPos)
-        $chk.Size = New-Object System.Drawing.Size(600, 22)
+        $chk.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $yPos)
+        $chk.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
         $chk.Checked = $win32.PreChecked
-        $chk.ForeColor = [System.Drawing.Color]::DarkRed
+        $chk.ForeColor = $script:UI.ErrorRed
+
+        # Add tooltip with category info
+        $script:MainTooltip.SetToolTip($chk, "Category: $($win32.Category)")
+
+        # Update selection count on check change
+        $chk.Add_CheckedChanged({
+            Update-SelectionCount -Label $script:BloatwareSelectionLabel -Checkboxes ($script:BloatwareCheckboxes + $script:Win32Checkboxes) -ItemType "app"
+        })
+
         $BloatwarePanel.Controls.Add($chk)
         $script:Win32Checkboxes += $chk
-        $yPos += 25
+        $yPos += $script:UI.ItemSpacing
     }
 }
+
+$yPos += 10
+
+# Selection count label
+$script:BloatwareSelectionLabel = New-Object System.Windows.Forms.Label
+$script:BloatwareSelectionLabel.Location = New-Object System.Drawing.Point(250, ($yPos + 14))
+$script:BloatwareSelectionLabel.Size = New-Object System.Drawing.Size(150, 20)
+$script:BloatwareSelectionLabel.ForeColor = $script:UI.SubtleGray
+$BloatwarePanel.Controls.Add($script:BloatwareSelectionLabel)
+Update-SelectionCount -Label $script:BloatwareSelectionLabel -Checkboxes ($script:BloatwareCheckboxes + $script:Win32Checkboxes) -ItemType "app"
 
 # Select All / Deselect All buttons
 $BtnSelectAllBloat = New-Object System.Windows.Forms.Button
 $BtnSelectAllBloat.Text = "Select All"
 $BtnSelectAllBloat.Location = New-Object System.Drawing.Point(20, ($yPos + 10))
-$BtnSelectAllBloat.Size = New-Object System.Drawing.Size(100, 28)
+$BtnSelectAllBloat.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
 $BtnSelectAllBloat.Add_Click({
     foreach ($chk in $script:BloatwareCheckboxes) { $chk.Checked = $true }
     foreach ($chk in $script:Win32Checkboxes) { $chk.Checked = $true }
@@ -932,27 +1318,42 @@ $BloatwarePanel.Controls.Add($BtnSelectAllBloat)
 $BtnDeselectAllBloat = New-Object System.Windows.Forms.Button
 $BtnDeselectAllBloat.Text = "Deselect All"
 $BtnDeselectAllBloat.Location = New-Object System.Drawing.Point(130, ($yPos + 10))
-$BtnDeselectAllBloat.Size = New-Object System.Drawing.Size(100, 28)
+$BtnDeselectAllBloat.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
 $BtnDeselectAllBloat.Add_Click({
     foreach ($chk in $script:BloatwareCheckboxes) { $chk.Checked = $false }
     foreach ($chk in $script:Win32Checkboxes) { $chk.Checked = $false }
 })
 $BloatwarePanel.Controls.Add($BtnDeselectAllBloat)
 
-# Remove Selected Bloatware button
+# Remove Selected Bloatware button with keyboard shortcut
 $BtnRemoveBloatware = New-Object System.Windows.Forms.Button
-$BtnRemoveBloatware.Text = "Remove Selected"
+$BtnRemoveBloatware.Text = "&Remove Selected"
 $BtnRemoveBloatware.Location = New-Object System.Drawing.Point(480, ($yPos + 10))
-$BtnRemoveBloatware.Size = New-Object System.Drawing.Size(150, 28)
-$BtnRemoveBloatware.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnRemoveBloatware.Size = New-Object System.Drawing.Size(150, $script:UI.ButtonHeight)
+$BtnRemoveBloatware.BackColor = $script:UI.AccentColor
 $BtnRemoveBloatware.ForeColor = [System.Drawing.Color]::White
 $BtnRemoveBloatware.FlatStyle = "Flat"
+Add-ButtonHoverEffect -Button $BtnRemoveBloatware
+$script:MainTooltip.SetToolTip($BtnRemoveBloatware, "Remove all selected bloatware apps (Alt+R)")
+
 $BtnRemoveBloatware.Add_Click({
-    $BtnRemoveBloatware.Enabled = $false
-    $successCount = 0
-    $failCount = 0
+    $selectedCount = @($script:BloatwareCheckboxes | Where-Object { $_.Checked }).Count + @($script:Win32Checkboxes | Where-Object { $_.Checked }).Count
+
+    if ($selectedCount -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No items selected for removal.", "Remove Bloatware", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
 
     $script:DryRun = $script:ChkDryRun.Checked
+    if (-not (Show-ConfirmationDialog -Title "Confirm Removal" -SelectedCount $selectedCount -ActionType "remove" -IsDryRun $script:DryRun)) {
+        return
+    }
+
+    Set-ButtonDisabled -Button $BtnRemoveBloatware -WorkingText "Removing..."
+    $successCount = 0
+    $failCount = 0
+    $currentItem = 0
+
     if ($script:DryRun) {
         Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
     }
@@ -961,7 +1362,9 @@ $BtnRemoveBloatware.Add_Click({
         # Remove AppX Bloatware
         foreach ($chk in $script:BloatwareCheckboxes) {
             if ($chk.Checked) {
+                $currentItem++
                 $bloat = $chk.Tag
+                Update-Progress -Current $currentItem -Total $selectedCount -CurrentItem $bloat.Name
                 if (Remove-BloatwareApp -PackageName $bloat.PackageName -DisplayName $bloat.Name) {
                     $successCount++
                 } else {
@@ -973,7 +1376,9 @@ $BtnRemoveBloatware.Add_Click({
         # Remove Win32 Bloatware
         foreach ($chk in $script:Win32Checkboxes) {
             if ($chk.Checked) {
+                $currentItem++
                 $win32 = $chk.Tag
+                Update-Progress -Current $currentItem -Total $selectedCount -CurrentItem $win32.DisplayName
                 if (Uninstall-Win32Program -DisplayName $win32.DisplayName -UninstallCommand $win32.UninstallCommand) {
                     $successCount++
                 } else {
@@ -981,6 +1386,8 @@ $BtnRemoveBloatware.Add_Click({
                 }
             }
         }
+
+        Hide-Progress
 
         $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
         Update-Status "${dryRunMsg}Bloatware removal complete! Success: $successCount, Failed: $failCount"
@@ -997,7 +1404,8 @@ $BtnRemoveBloatware.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     finally {
-        $BtnRemoveBloatware.Enabled = $true
+        Hide-Progress
+        Set-ButtonEnabled -Button $BtnRemoveBloatware
         $script:DryRun = $false
     }
 })
@@ -1010,196 +1418,218 @@ $TabBloatware.Controls.Add($BloatwarePanel)
 # ============================================================================
 
 $TabSettings = New-Object System.Windows.Forms.TabPage
-$TabSettings.Text = "Settings"
+$TabSettings.Text = "&Settings"
 $TabSettings.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $SettingsPanel = New-Object System.Windows.Forms.Panel
 $SettingsPanel.Dock = "Fill"
 $SettingsPanel.AutoScroll = $true
 
-$script:SettingsCheckboxes = @()
-$settingsYPos = 20
+# Introduction text
+$settingsYPos = New-IntroText -Panel $SettingsPanel -Text "Configure Windows settings. Changes take effect immediately after applying. Explorer will restart automatically." -YPosition 8
 
-# Taskbar section header
-$LblTaskbar = New-Object System.Windows.Forms.Label
-$LblTaskbar.Text = "Taskbar Settings:"
-$LblTaskbar.Location = New-Object System.Drawing.Point(20, $settingsYPos)
-$LblTaskbar.Size = New-Object System.Drawing.Size(600, 20)
-$LblTaskbar.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$SettingsPanel.Controls.Add($LblTaskbar)
-$settingsYPos += 25
+$script:SettingsCheckboxes = @()
+
+# Tooltip descriptions for settings
+$settingsTooltips = @{
+    "SearchIcon" = "Reduces the large search box to a compact icon, saving taskbar space"
+    "MultiMonitor" = "Shows the taskbar on all monitors; apps appear on the display where their window is open"
+    "CombineWhenFull" = "Shows separate buttons for each window until taskbar runs out of space"
+    "HideRecommended" = "Hides the 'Recommended' section in the Start Menu that shows recent files (Win11 only)"
+    "DisableBing" = "Prevents web searches when you type in the Start Menu - only shows local results"
+    "PowerSettings" = "Optimizes power settings: display off after 10 min, never sleep when plugged in, sleep after 1 hour on battery"
+    "Clipboard" = "Enables clipboard history - press Win+V to access previously copied items"
+    "StorageSense" = "Automatically cleans temporary files daily: Downloads older than 14 days, Recycle Bin items older than 30 days"
+    "ExplorerThisPC" = "Opens File Explorer to 'This PC' view showing drives instead of Quick Access/Home"
+    "ShowExtensions" = "Shows file extensions like .txt, .exe, .pdf - helps identify file types and spot malware"
+    "CleanQuickAccess" = "Removes all pinned folders from Quick Access except Desktop and Downloads"
+    "StartPins" = "Resets pinned apps in Start Menu to Windows defaults (requires sign-out to take effect)"
+}
+
+# Taskbar section
+$settingsYPos = New-SectionHeader -Panel $SettingsPanel -Text "Taskbar" -YPosition $settingsYPos
 
 # Search Icon
 $ChkSearchIcon = New-Object System.Windows.Forms.CheckBox
 $ChkSearchIcon.Text = "Reduce taskbar search to icon only"
-$ChkSearchIcon.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkSearchIcon.Size = New-Object System.Drawing.Size(600, 25)
+$ChkSearchIcon.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkSearchIcon.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkSearchIcon.Checked = $true
 $ChkSearchIcon.Tag = "SearchIcon"
+$script:MainTooltip.SetToolTip($ChkSearchIcon, $settingsTooltips["SearchIcon"])
 $SettingsPanel.Controls.Add($ChkSearchIcon)
 $script:SettingsCheckboxes += $ChkSearchIcon
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
 
 # Multi-monitor taskbar
 $ChkMultiMonitor = New-Object System.Windows.Forms.CheckBox
 $ChkMultiMonitor.Text = "Show taskbar on all displays + show apps where window is open"
-$ChkMultiMonitor.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkMultiMonitor.Size = New-Object System.Drawing.Size(600, 25)
+$ChkMultiMonitor.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkMultiMonitor.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkMultiMonitor.Checked = $true
 $ChkMultiMonitor.Tag = "MultiMonitor"
+$script:MainTooltip.SetToolTip($ChkMultiMonitor, $settingsTooltips["MultiMonitor"])
 $SettingsPanel.Controls.Add($ChkMultiMonitor)
 $script:SettingsCheckboxes += $ChkMultiMonitor
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
 
 # Combine when full
 $ChkCombineWhenFull = New-Object System.Windows.Forms.CheckBox
 $ChkCombineWhenFull.Text = "Combine taskbar buttons only when full"
-$ChkCombineWhenFull.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkCombineWhenFull.Size = New-Object System.Drawing.Size(600, 25)
+$ChkCombineWhenFull.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkCombineWhenFull.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkCombineWhenFull.Checked = $true
 $ChkCombineWhenFull.Tag = "CombineWhenFull"
+$script:MainTooltip.SetToolTip($ChkCombineWhenFull, $settingsTooltips["CombineWhenFull"])
 $SettingsPanel.Controls.Add($ChkCombineWhenFull)
 $script:SettingsCheckboxes += $ChkCombineWhenFull
-$settingsYPos += 35
+$settingsYPos += $script:UI.SectionSpacing
 
-# Start Menu section header
-$LblStartMenu = New-Object System.Windows.Forms.Label
-$LblStartMenu.Text = "Start Menu Settings (Windows 11):"
-$LblStartMenu.Location = New-Object System.Drawing.Point(20, $settingsYPos)
-$LblStartMenu.Size = New-Object System.Drawing.Size(600, 20)
-$LblStartMenu.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$SettingsPanel.Controls.Add($LblStartMenu)
-$settingsYPos += 25
+# Start Menu section
+$settingsYPos = New-SectionHeader -Panel $SettingsPanel -Text "Start Menu" -YPosition $settingsYPos
 
 # Start Menu Recommended
 $ChkHideRecommended = New-Object System.Windows.Forms.CheckBox
 $ChkHideRecommended.Text = "Hide Start Menu Recommended section"
-$ChkHideRecommended.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkHideRecommended.Size = New-Object System.Drawing.Size(600, 25)
+$ChkHideRecommended.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkHideRecommended.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkHideRecommended.Checked = $IsWindows11
 $ChkHideRecommended.Tag = "HideRecommended"
 $ChkHideRecommended.Enabled = $IsWindows11
+$script:MainTooltip.SetToolTip($ChkHideRecommended, $settingsTooltips["HideRecommended"])
 $SettingsPanel.Controls.Add($ChkHideRecommended)
 $script:SettingsCheckboxes += $ChkHideRecommended
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
 
 # Disable Bing Search
 $ChkDisableBing = New-Object System.Windows.Forms.CheckBox
 $ChkDisableBing.Text = "Disable Bing search in Start Menu"
-$ChkDisableBing.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkDisableBing.Size = New-Object System.Drawing.Size(600, 25)
+$ChkDisableBing.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkDisableBing.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkDisableBing.Checked = $true
 $ChkDisableBing.Tag = "DisableBing"
+$script:MainTooltip.SetToolTip($ChkDisableBing, $settingsTooltips["DisableBing"])
 $SettingsPanel.Controls.Add($ChkDisableBing)
 $script:SettingsCheckboxes += $ChkDisableBing
-$settingsYPos += 35
+$settingsYPos += $script:UI.SectionSpacing
 
-# Power section header
-$LblPower = New-Object System.Windows.Forms.Label
-$LblPower.Text = "Power Settings:"
-$LblPower.Location = New-Object System.Drawing.Point(20, $settingsYPos)
-$LblPower.Size = New-Object System.Drawing.Size(600, 20)
-$LblPower.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$SettingsPanel.Controls.Add($LblPower)
-$settingsYPos += 25
+# Power section
+$settingsYPos = New-SectionHeader -Panel $SettingsPanel -Text "Power" -YPosition $settingsYPos
 
 # Power Settings
 $ChkPowerSettings = New-Object System.Windows.Forms.CheckBox
 $ChkPowerSettings.Text = "Configure power: Display off 10min, Never sleep on AC, Sleep 1hr on battery"
-$ChkPowerSettings.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkPowerSettings.Size = New-Object System.Drawing.Size(600, 25)
+$ChkPowerSettings.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkPowerSettings.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkPowerSettings.Checked = $true
 $ChkPowerSettings.Tag = "PowerSettings"
+$script:MainTooltip.SetToolTip($ChkPowerSettings, $settingsTooltips["PowerSettings"])
 $SettingsPanel.Controls.Add($ChkPowerSettings)
 $script:SettingsCheckboxes += $ChkPowerSettings
-$settingsYPos += 35
+$settingsYPos += $script:UI.SectionSpacing
 
-# Other section header
-$LblOther = New-Object System.Windows.Forms.Label
-$LblOther.Text = "Other Settings:"
-$LblOther.Location = New-Object System.Drawing.Point(20, $settingsYPos)
-$LblOther.Size = New-Object System.Drawing.Size(600, 20)
-$LblOther.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$SettingsPanel.Controls.Add($LblOther)
-$settingsYPos += 25
+# System section
+$settingsYPos = New-SectionHeader -Panel $SettingsPanel -Text "System" -YPosition $settingsYPos
 
 # Clipboard History
 $ChkClipboard = New-Object System.Windows.Forms.CheckBox
 $ChkClipboard.Text = "Enable Windows Clipboard History (Win+V)"
-$ChkClipboard.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkClipboard.Size = New-Object System.Drawing.Size(600, 25)
+$ChkClipboard.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkClipboard.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkClipboard.Checked = $true
 $ChkClipboard.Tag = "Clipboard"
+$script:MainTooltip.SetToolTip($ChkClipboard, $settingsTooltips["Clipboard"])
 $SettingsPanel.Controls.Add($ChkClipboard)
 $script:SettingsCheckboxes += $ChkClipboard
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
 
 # Storage Sense
 $ChkStorageSense = New-Object System.Windows.Forms.CheckBox
-$ChkStorageSense.Text = "Enable Storage Sense (Downloads: 14 days, Recycle Bin: 30 days auto-cleanup)"
-$ChkStorageSense.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkStorageSense.Size = New-Object System.Drawing.Size(600, 25)
+$ChkStorageSense.Text = "Enable Storage Sense (auto-cleanup temporary files)"
+$ChkStorageSense.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkStorageSense.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkStorageSense.Checked = $true
 $ChkStorageSense.Tag = "StorageSense"
+$script:MainTooltip.SetToolTip($ChkStorageSense, $settingsTooltips["StorageSense"])
 $SettingsPanel.Controls.Add($ChkStorageSense)
 $script:SettingsCheckboxes += $ChkStorageSense
-$settingsYPos += 35
+$settingsYPos += $script:UI.SectionSpacing
 
-# Explorer section header
-$LblExplorer = New-Object System.Windows.Forms.Label
-$LblExplorer.Text = "Explorer Settings:"
-$LblExplorer.Location = New-Object System.Drawing.Point(20, $settingsYPos)
-$LblExplorer.Size = New-Object System.Drawing.Size(600, 20)
-$LblExplorer.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$SettingsPanel.Controls.Add($LblExplorer)
-$settingsYPos += 25
+# Explorer section
+$settingsYPos = New-SectionHeader -Panel $SettingsPanel -Text "File Explorer" -YPosition $settingsYPos
 
 # Explorer opens to This PC
 $ChkExplorerThisPC = New-Object System.Windows.Forms.CheckBox
 $ChkExplorerThisPC.Text = "Set Explorer to open to 'This PC' instead of Quick Access/Home"
-$ChkExplorerThisPC.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkExplorerThisPC.Size = New-Object System.Drawing.Size(600, 25)
+$ChkExplorerThisPC.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkExplorerThisPC.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkExplorerThisPC.Checked = $true
 $ChkExplorerThisPC.Tag = "ExplorerThisPC"
+$script:MainTooltip.SetToolTip($ChkExplorerThisPC, $settingsTooltips["ExplorerThisPC"])
 $SettingsPanel.Controls.Add($ChkExplorerThisPC)
 $script:SettingsCheckboxes += $ChkExplorerThisPC
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
 
 # Show File Extensions
 $ChkShowExtensions = New-Object System.Windows.Forms.CheckBox
 $ChkShowExtensions.Text = "Show file extensions (e.g., .txt, .exe, .pdf)"
-$ChkShowExtensions.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkShowExtensions.Size = New-Object System.Drawing.Size(600, 25)
+$ChkShowExtensions.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkShowExtensions.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkShowExtensions.Checked = $true
 $ChkShowExtensions.Tag = "ShowExtensions"
+$script:MainTooltip.SetToolTip($ChkShowExtensions, $settingsTooltips["ShowExtensions"])
 $SettingsPanel.Controls.Add($ChkShowExtensions)
 $script:SettingsCheckboxes += $ChkShowExtensions
-$settingsYPos += 28
+$settingsYPos += $script:UI.ItemSpacing
+
+# Clean Quick Access
+$ChkCleanQuickAccess = New-Object System.Windows.Forms.CheckBox
+$ChkCleanQuickAccess.Text = "Clean Quick Access pinned folders (keep only Desktop and Downloads)"
+$ChkCleanQuickAccess.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkCleanQuickAccess.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$ChkCleanQuickAccess.Checked = $true
+$ChkCleanQuickAccess.Tag = "CleanQuickAccess"
+$script:MainTooltip.SetToolTip($ChkCleanQuickAccess, $settingsTooltips["CleanQuickAccess"])
+$SettingsPanel.Controls.Add($ChkCleanQuickAccess)
+$script:SettingsCheckboxes += $ChkCleanQuickAccess
+$settingsYPos += $script:UI.ItemSpacing
 
 # Start Menu Pins (Win11 only)
 $ChkStartPins = New-Object System.Windows.Forms.CheckBox
-$ChkStartPins.Text = "Set Start Menu pins: Explorer, Calculator, Snipping Tool only (Win11)"
-$ChkStartPins.Location = New-Object System.Drawing.Point(30, $settingsYPos)
-$ChkStartPins.Size = New-Object System.Drawing.Size(600, 25)
+$ChkStartPins.Text = "Reset Start Menu pins to defaults (requires sign-out)"
+$ChkStartPins.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkStartPins.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkStartPins.Checked = $IsWindows11
 $ChkStartPins.Tag = "StartPins"
 $ChkStartPins.Enabled = $IsWindows11
+$script:MainTooltip.SetToolTip($ChkStartPins, $settingsTooltips["StartPins"])
 $SettingsPanel.Controls.Add($ChkStartPins)
 $script:SettingsCheckboxes += $ChkStartPins
 $settingsYPos += 40
 
-# Apply Settings button
+# Apply Settings button with keyboard shortcut
 $BtnApplySettings = New-Object System.Windows.Forms.Button
-$BtnApplySettings.Text = "Apply Settings"
+$BtnApplySettings.Text = "&Apply Settings"
 $BtnApplySettings.Location = New-Object System.Drawing.Point(480, $settingsYPos)
-$BtnApplySettings.Size = New-Object System.Drawing.Size(150, 28)
-$BtnApplySettings.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnApplySettings.Size = New-Object System.Drawing.Size(150, $script:UI.ButtonHeight)
+$BtnApplySettings.BackColor = $script:UI.AccentColor
 $BtnApplySettings.ForeColor = [System.Drawing.Color]::White
 $BtnApplySettings.FlatStyle = "Flat"
+Add-ButtonHoverEffect -Button $BtnApplySettings
+$script:MainTooltip.SetToolTip($BtnApplySettings, "Apply all selected settings (Alt+A)")
+
 $BtnApplySettings.Add_Click({
-    $BtnApplySettings.Enabled = $false
+    $selectedCount = @($script:SettingsCheckboxes | Where-Object { $_.Checked -and $_.Enabled }).Count
+
+    if ($selectedCount -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No settings selected to apply.", "Apply Settings", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+
+    Set-ButtonDisabled -Button $BtnApplySettings -WorkingText "Applying..."
     $successCount = 0
     $failCount = 0
+    $currentItem = 0
 
     $script:DryRun = $script:ChkDryRun.Checked
     if ($script:DryRun) {
@@ -1208,7 +1638,9 @@ $BtnApplySettings.Add_Click({
 
     try {
         foreach ($chk in $script:SettingsCheckboxes) {
-            if ($chk.Checked) {
+            if ($chk.Checked -and $chk.Enabled) {
+                $currentItem++
+                Update-Progress -Current $currentItem -Total $selectedCount -CurrentItem $chk.Text
                 $result = $false
                 switch ($chk.Tag) {
                     "SearchIcon" { $result = Set-TaskbarSearchIcon }
@@ -1221,11 +1653,14 @@ $BtnApplySettings.Add_Click({
                     "StorageSense" { $result = Enable-StorageSense }
                     "ExplorerThisPC" { $result = Set-ExplorerToThisPC }
                     "ShowExtensions" { $result = Enable-ShowFileExtensions }
+                    "CleanQuickAccess" { $result = Clear-ExplorerQuickAccess }
                     "StartPins" { $result = Set-StartMenuPins }
                 }
                 if ($result) { $successCount++ } else { $failCount++ }
             }
         }
+
+        Hide-Progress
 
         # Restart Explorer to apply changes
         if (-not $script:DryRun -and $successCount -gt 0) {
@@ -1247,7 +1682,8 @@ $BtnApplySettings.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     finally {
-        $BtnApplySettings.Enabled = $true
+        Hide-Progress
+        Set-ButtonEnabled -Button $BtnApplySettings
         $script:DryRun = $false
     }
 })
@@ -1260,56 +1696,94 @@ $TabSettings.Controls.Add($SettingsPanel)
 # ============================================================================
 
 $TabInstallApps = New-Object System.Windows.Forms.TabPage
-$TabInstallApps.Text = "Install Apps"
+$TabInstallApps.Text = "&Install Apps"
 $TabInstallApps.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $InstallAppsPanel = New-Object System.Windows.Forms.Panel
 $InstallAppsPanel.Dock = "Fill"
 $InstallAppsPanel.AutoScroll = $true
 
-$wingetAvailable = Test-WingetInstalled
-$wingetStatus = if ($wingetAvailable) { "Winget is available - select apps to install" } else { "Winget NOT found - app installation will be skipped" }
+# Introduction text
+$appYPos = New-IntroText -Panel $InstallAppsPanel -Text "Select applications to install via Windows Package Manager (winget). Installations run silently in the background." -YPosition 8
 
+$wingetAvailable = Test-WingetInstalled
+
+# Winget status indicator
 $LblWingetStatus = New-Object System.Windows.Forms.Label
-$LblWingetStatus.Text = $wingetStatus
-$LblWingetStatus.Location = New-Object System.Drawing.Point(20, 10)
+$LblWingetStatus.Location = New-Object System.Drawing.Point(20, $appYPos)
 $LblWingetStatus.Size = New-Object System.Drawing.Size(600, 20)
-$LblWingetStatus.ForeColor = if ($wingetAvailable) { [System.Drawing.Color]::Green } else { [System.Drawing.Color]::Red }
+if ($wingetAvailable) {
+    $LblWingetStatus.Text = "Winget is available"
+    $LblWingetStatus.ForeColor = $script:UI.SuccessGreen
+} else {
+    $LblWingetStatus.Text = "Winget NOT found - please install App Installer from the Microsoft Store"
+    $LblWingetStatus.ForeColor = $script:UI.ErrorRed
+}
 $InstallAppsPanel.Controls.Add($LblWingetStatus)
+$appYPos += 25
+
+# App tooltips
+$appTooltips = @{
+    "Google Chrome" = "Popular web browser by Google"
+    "Brave Browser" = "Privacy-focused web browser with built-in ad blocking"
+    "Adobe Acrobat Reader" = "Standard PDF viewer and annotator"
+    "Google Drive" = "Cloud storage and file sync service"
+    "Proton Pass" = "Secure password manager by Proton"
+    "Todoist" = "Popular task management and to-do list app"
+    "PhraseVault" = "Password and phrase management utility"
+    "Microsoft PowerToys" = "Power user utilities including FancyZones, PowerRename, and more"
+    "LocalSend" = "Cross-platform file sharing app (like AirDrop)"
+    "Visual Studio Code" = "Lightweight code editor with extensions support"
+    "7-Zip" = "Free file archiver with high compression ratio"
+    "VLC Media Player" = "Universal media player supporting most formats"
+}
 
 $script:AppCheckboxes = @()
-$appYPos = 40
 $currentCategory = ""
 
 foreach ($app in $WingetApps) {
     if ($app.Category -ne $currentCategory) {
         $currentCategory = $app.Category
-        $lblCategory = New-Object System.Windows.Forms.Label
-        $lblCategory.Text = "--- $currentCategory ---"
-        $lblCategory.Location = New-Object System.Drawing.Point(20, $appYPos)
-        $lblCategory.Size = New-Object System.Drawing.Size(600, 20)
-        $lblCategory.ForeColor = [System.Drawing.Color]::DarkBlue
-        $InstallAppsPanel.Controls.Add($lblCategory)
-        $appYPos += 22
+        $appYPos = New-SectionHeader -Panel $InstallAppsPanel -Text $currentCategory -YPosition $appYPos
     }
 
     $chk = New-Object System.Windows.Forms.CheckBox
     $chk.Text = "$($app.Name)"
     $chk.Tag = $app
-    $chk.Location = New-Object System.Drawing.Point(35, $appYPos)
-    $chk.Size = New-Object System.Drawing.Size(600, 22)
+    $chk.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $appYPos)
+    $chk.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
     $chk.Checked = $false
     $chk.Enabled = $wingetAvailable
+
+    # Add tooltip
+    $tooltipText = if ($appTooltips.ContainsKey($app.Name)) { $appTooltips[$app.Name] } else { "Winget ID: $($app.WingetId)" }
+    $script:MainTooltip.SetToolTip($chk, $tooltipText)
+
+    # Update selection count on check change
+    $chk.Add_CheckedChanged({
+        Update-SelectionCount -Label $script:AppsSelectionLabel -Checkboxes $script:AppCheckboxes -ItemType "app"
+    })
+
     $InstallAppsPanel.Controls.Add($chk)
     $script:AppCheckboxes += $chk
-    $appYPos += 24
+    $appYPos += $script:UI.ItemSpacing
 }
+
+$appYPos += 10
+
+# Selection count label
+$script:AppsSelectionLabel = New-Object System.Windows.Forms.Label
+$script:AppsSelectionLabel.Location = New-Object System.Drawing.Point(250, ($appYPos + 14))
+$script:AppsSelectionLabel.Size = New-Object System.Drawing.Size(150, 20)
+$script:AppsSelectionLabel.ForeColor = $script:UI.SubtleGray
+$InstallAppsPanel.Controls.Add($script:AppsSelectionLabel)
+Update-SelectionCount -Label $script:AppsSelectionLabel -Checkboxes $script:AppCheckboxes -ItemType "app"
 
 # Select All / Deselect All buttons
 $BtnSelectAllApps = New-Object System.Windows.Forms.Button
 $BtnSelectAllApps.Text = "Select All"
 $BtnSelectAllApps.Location = New-Object System.Drawing.Point(20, ($appYPos + 10))
-$BtnSelectAllApps.Size = New-Object System.Drawing.Size(100, 28)
+$BtnSelectAllApps.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
 $BtnSelectAllApps.Enabled = $wingetAvailable
 $BtnSelectAllApps.Add_Click({
     foreach ($chk in $script:AppCheckboxes) { $chk.Checked = $true }
@@ -1319,28 +1793,43 @@ $InstallAppsPanel.Controls.Add($BtnSelectAllApps)
 $BtnDeselectAllApps = New-Object System.Windows.Forms.Button
 $BtnDeselectAllApps.Text = "Deselect All"
 $BtnDeselectAllApps.Location = New-Object System.Drawing.Point(130, ($appYPos + 10))
-$BtnDeselectAllApps.Size = New-Object System.Drawing.Size(100, 28)
+$BtnDeselectAllApps.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
 $BtnDeselectAllApps.Enabled = $wingetAvailable
 $BtnDeselectAllApps.Add_Click({
     foreach ($chk in $script:AppCheckboxes) { $chk.Checked = $false }
 })
 $InstallAppsPanel.Controls.Add($BtnDeselectAllApps)
 
-# Install Selected Apps button
+# Install Selected Apps button with keyboard shortcut
 $BtnInstallApps = New-Object System.Windows.Forms.Button
-$BtnInstallApps.Text = "Install Selected"
+$BtnInstallApps.Text = "&Install Selected"
 $BtnInstallApps.Location = New-Object System.Drawing.Point(480, ($appYPos + 10))
-$BtnInstallApps.Size = New-Object System.Drawing.Size(150, 28)
-$BtnInstallApps.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$BtnInstallApps.Size = New-Object System.Drawing.Size(150, $script:UI.ButtonHeight)
+$BtnInstallApps.BackColor = $script:UI.AccentColor
 $BtnInstallApps.ForeColor = [System.Drawing.Color]::White
 $BtnInstallApps.FlatStyle = "Flat"
 $BtnInstallApps.Enabled = $wingetAvailable
+Add-ButtonHoverEffect -Button $BtnInstallApps
+$script:MainTooltip.SetToolTip($BtnInstallApps, "Install all selected applications via winget (Alt+I)")
+
 $BtnInstallApps.Add_Click({
-    $BtnInstallApps.Enabled = $false
-    $successCount = 0
-    $failCount = 0
+    $selectedCount = @($script:AppCheckboxes | Where-Object { $_.Checked }).Count
+
+    if ($selectedCount -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No apps selected for installation.", "Install Apps", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
 
     $script:DryRun = $script:ChkDryRun.Checked
+    if (-not (Show-ConfirmationDialog -Title "Confirm Installation" -SelectedCount $selectedCount -ActionType "install" -IsDryRun $script:DryRun)) {
+        return
+    }
+
+    Set-ButtonDisabled -Button $BtnInstallApps -WorkingText "Installing..."
+    $successCount = 0
+    $failCount = 0
+    $currentItem = 0
+
     if ($script:DryRun) {
         Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
     }
@@ -1353,7 +1842,9 @@ $BtnInstallApps.Add_Click({
 
         foreach ($chk in $script:AppCheckboxes) {
             if ($chk.Checked) {
+                $currentItem++
                 $app = $chk.Tag
+                Update-Progress -Current $currentItem -Total $selectedCount -CurrentItem $app.Name
                 if (Install-WingetApp -WingetId $app.WingetId -DisplayName $app.Name) {
                     $successCount++
                 } else {
@@ -1361,6 +1852,8 @@ $BtnInstallApps.Add_Click({
                 }
             }
         }
+
+        Hide-Progress
 
         $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
         Update-Status "${dryRunMsg}App installation complete! Success: $successCount, Failed: $failCount"
@@ -1377,7 +1870,8 @@ $BtnInstallApps.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
     finally {
-        $BtnInstallApps.Enabled = $wingetAvailable
+        Hide-Progress
+        Set-ButtonEnabled -Button $BtnInstallApps
         $script:DryRun = $false
     }
 })
@@ -1396,34 +1890,73 @@ $MainForm.Controls.Add($TabControl)
 # BOTTOM CONTROLS
 # ============================================================================
 
-# Dry Run checkbox (script-scope so tab buttons can access it)
-$script:ChkDryRun = New-Object System.Windows.Forms.CheckBox
-$script:ChkDryRun.Text = "Dry Run (preview only, no changes)"
-$script:ChkDryRun.Location = New-Object System.Drawing.Point(10, 450)
-$script:ChkDryRun.Size = New-Object System.Drawing.Size(250, 22)
-$script:ChkDryRun.Checked = $false
-$script:ChkDryRun.ForeColor = [System.Drawing.Color]::DarkOrange
-$MainForm.Controls.Add($script:ChkDryRun)
+# Dry Run panel with enhanced visibility
+$DryRunPanel = New-Object System.Windows.Forms.Panel
+$DryRunPanel.Location = New-Object System.Drawing.Point(10, 468)
+$DryRunPanel.Size = New-Object System.Drawing.Size(280, 36)
+$DryRunPanel.BackColor = $script:UI.WarningBg
+$DryRunPanel.BorderStyle = "FixedSingle"
 
-# Status label
-$script:StatusLabel = New-Object System.Windows.Forms.Label
-$script:StatusLabel.Text = "Ready | $OSName | Log: $script:LogPath"
-$script:StatusLabel.Location = New-Object System.Drawing.Point(10, 510)
-$script:StatusLabel.Size = New-Object System.Drawing.Size(660, 25)
-$script:StatusLabel.BorderStyle = "FixedSingle"
-$MainForm.Controls.Add($script:StatusLabel)
+# Dry Run checkbox with keyboard shortcut (script-scope so tab buttons can access it)
+$script:ChkDryRun = New-Object System.Windows.Forms.CheckBox
+$script:ChkDryRun.Text = "Dr&y Run (preview only, no changes)"
+$script:ChkDryRun.Location = New-Object System.Drawing.Point(8, 8)
+$script:ChkDryRun.Size = New-Object System.Drawing.Size(260, 20)
+$script:ChkDryRun.Checked = $false
+$script:ChkDryRun.Font = New-Object System.Drawing.Font("Segoe UI Semibold", $script:UI.BodyFontSize)
+$script:ChkDryRun.ForeColor = $script:UI.WarningOrange
+$script:ChkDryRun.BackColor = $script:UI.WarningBg
+$script:MainTooltip.SetToolTip($script:ChkDryRun, "When enabled, actions will be simulated without making actual changes (Alt+Y)")
+$DryRunPanel.Controls.Add($script:ChkDryRun)
+$MainForm.Controls.Add($DryRunPanel)
 
 # Open Log button
 $BtnOpenLog = New-Object System.Windows.Forms.Button
 $BtnOpenLog.Text = "Open Log"
-$BtnOpenLog.Location = New-Object System.Drawing.Point(10, 475)
-$BtnOpenLog.Size = New-Object System.Drawing.Size(100, 28)
+$BtnOpenLog.Location = New-Object System.Drawing.Point(300, 472)
+$BtnOpenLog.Size = New-Object System.Drawing.Size(90, 28)
+$script:MainTooltip.SetToolTip($BtnOpenLog, "Open the log file in Notepad")
 $BtnOpenLog.Add_Click({
     if (Test-Path $script:LogPath) {
         Start-Process notepad.exe -ArgumentList $script:LogPath
     }
 })
 $MainForm.Controls.Add($BtnOpenLog)
+
+# Progress label (hidden by default, shown above progress bar)
+$script:ProgressLabel = New-Object System.Windows.Forms.Label
+$script:ProgressLabel.Location = New-Object System.Drawing.Point(400, 470)
+$script:ProgressLabel.Size = New-Object System.Drawing.Size(275, 16)
+$script:ProgressLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$script:ProgressLabel.ForeColor = $script:UI.SubtleGray
+$script:ProgressLabel.Visible = $false
+$MainForm.Controls.Add($script:ProgressLabel)
+
+# Progress bar (hidden by default)
+$script:ProgressBar = New-Object System.Windows.Forms.ProgressBar
+$script:ProgressBar.Location = New-Object System.Drawing.Point(400, 486)
+$script:ProgressBar.Size = New-Object System.Drawing.Size(275, 18)
+$script:ProgressBar.Style = "Continuous"
+$script:ProgressBar.Visible = $false
+$MainForm.Controls.Add($script:ProgressBar)
+
+# Status label
+$script:StatusLabel = New-Object System.Windows.Forms.Label
+$script:StatusLabel.Text = "Ready | $OSName | Log: $script:LogPath"
+$script:StatusLabel.Location = New-Object System.Drawing.Point(10, 550)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(665, 25)
+$script:StatusLabel.BorderStyle = "FixedSingle"
+$script:StatusLabel.Padding = New-Object System.Windows.Forms.Padding(5, 4, 0, 0)
+$MainForm.Controls.Add($script:StatusLabel)
+
+# Version and help info
+$LblVersion = New-Object System.Windows.Forms.Label
+$LblVersion.Text = "v2.0 | Keyboard shortcuts: Alt+R (Remove), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Location = New-Object System.Drawing.Point(10, 530)
+$LblVersion.Size = New-Object System.Drawing.Size(665, 18)
+$LblVersion.ForeColor = $script:UI.SubtleGray
+$LblVersion.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$MainForm.Controls.Add($LblVersion)
 
 # ============================================================================
 # SHOW FORM
