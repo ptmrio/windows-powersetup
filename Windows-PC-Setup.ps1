@@ -30,9 +30,9 @@ $script:DryRun = $false
 # Check for administrator privileges
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    # Relaunch as administrator
-    $arguments = "& '" + $MyInvocation.MyCommand.Definition + "'"
-    Start-Process powershell -Verb RunAs -ArgumentList $arguments
+    # Relaunch as administrator with proper flags
+    $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Definition }
+    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$scriptPath`""
     exit
 }
 
