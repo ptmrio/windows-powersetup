@@ -58,6 +58,16 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Global error handler - ensures errors are visible
+trap {
+    $errorMsg = "FATAL ERROR: $($_.Exception.Message)`nLine: $($_.InvocationInfo.ScriptLineNumber)`nStack: $($_.ScriptStackTrace)"
+    Write-Host $errorMsg -ForegroundColor Red
+    Add-Content -Path $script:LogPath -Value $errorMsg -ErrorAction SilentlyContinue
+    [System.Windows.Forms.MessageBox]::Show($errorMsg, "Windows PC Setup - Error", 0, 16) | Out-Null
+    Stop-Transcript -ErrorAction SilentlyContinue
+    exit 1
+}
+
 # ============================================================================
 # UI CONSTANTS
 # ============================================================================
@@ -1962,8 +1972,15 @@ $MainForm.Controls.Add($LblVersion)
 # SHOW FORM
 # ============================================================================
 
-Write-Log "Application started"
-[void]$MainForm.ShowDialog()
-
-# Cleanup
-Stop-Transcript
+try {
+    Write-Log "Application started"
+    [void]$MainForm.ShowDialog()
+}
+catch {
+    $errorMsg = "FATAL ERROR: $($_.Exception.Message)`n`nStack trace:`n$($_.ScriptStackTrace)"
+    Write-Log $errorMsg "ERROR"
+    [System.Windows.Forms.MessageBox]::Show($errorMsg, "Windows PC Setup - Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+}
+finally {
+    Stop-Transcript
+}
