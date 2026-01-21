@@ -1074,53 +1074,65 @@ function Set-StartMenuPins {
     }
 
     if ($script:DryRun) {
-        Write-Log "Would reset Start Menu pins (delete start2.bin to reset to defaults)" "INFO"
+        Write-Log "Would clear all Start Menu pins (replace start2.bin with empty template)" "INFO"
         return $true
     }
 
     try {
-        Update-Status "Resetting Start Menu pinned apps..."
+        Update-Status "Clearing Start Menu pinned apps..."
 
-        # Windows 11 stores Start Menu pins in a binary file that cannot be easily edited
-        # The most reliable approach is to delete the binary layout file to reset to defaults
-        # User will need to manually pin the 3 desired apps after reset
+        # Empty start2.bin template from Win11Debloat project (https://github.com/Raphire/Win11Debloat)
+        # This creates a completely empty pinned apps section
+        $emptyStart2BinBase64 = "4nrhSwH8TRucAIEL3m5RhU5aX0cAW7FJilySr5CE+V6aoBj7A+HZAaADAABc9u55LN8F4borYyXEGl8Q5+RZ+qERszeqUhhZXDvcjTF6rgdprauITLqPgMVMbSZbRsLN/O5uMjSLEr6nWYIwsMJkZMnZyZrhR3PugUhUKOYDqwySCY6/CPkL/Ooz/5j2R2hwWRGqc7ZsJxDFM1DWofjUiGjDUny+Y8UjowknQVaPYao0PC4bygKEbeZqCqRvSgPalSc53OFqCh2FHydzl09fChaos385QvF40EDEgSO8U9/dntAeNULwuuZBi7BkWSIOmWN1l4e+TZbtSJXwn+EINAJhRHyCSNeku21dsw+cMoLorMKnRmhJMLvE+CCdgNKIaPo/Krizva1+bMsI8bSkV/CxaCTLXodb/NuBYCsIHY1sTvbwSBRNMPvccw43RJCUKZRkBLkCVfW24ANbLfHXofHDMLxxFNUpBPSgzGHnueHknECcf6J4HCFBqzvSH1TjQ3S6J8tq2yaQ+jFNkxGRMushdXNNiTNjDFYMJNvgRL2lu63NPE+Cxy+IKC1NdKLweFdOGZr2mvKAw7t/fxmCTieUgLkegDomZbHL6anjy4SkjSCnfTBUNtxc0X3VJiha4wq/ArRrTtVnzcUcX+CI4BNTicx+X2eXugI+EHKjgaQS7fXHqQGEUMUeHMCXlgWUZ5kE3LFTjVifyVIGqYNDuqt7T9l7DWByiuRariySa7tiN1gA2ALKYlRsjsQL7xpxHnT1hi/9b+UuyC46cYQaDUcKDc4BGReJP2gDIyZfudLpgUPc7YfH9doiMcWimSylbKFtsI3Mfo0HONxet5XjzjDoziduYk2dFoFfz19uaRcOHtASKzaGdtk6RC+Tm4BbU/7PlbvHEKJZ720AxOQkzU9U8RWAHHsPUVfWzYoQc2dN8OQ/JlUAqe8+PI05ST4m3LoUpBKB+oU0H84aet5etGpIi4CthvazGencFObWJWNRzxk9BXIX2YoAdXB8b7JFwlxVdhgzZK0zkkrzSSmX9iJcNoi6Tp+RtnljzLTAv6xh8gwytIW5F2e5sVh7aiqo4sji0aE+ToqyNPV7eE9Idi2ZNeEbnJ9LX127uOl5jB280hs0caXLUrYiR15+Y31wtlD8JVeTDxDDac6v+e3C4VX+28mg9bYQ7NGYXZc7yZANC/nWTn+/hkTZUvR0gi+PUz4o/DSdKzbvVCAlqdjArcKkWW4r/WKUSLskoOKRPxdNLPVBl2S6blje4LvBzulpeHWubXWfCW4ILuOI"
 
         $startMenuHost = Get-AppxPackage -Name "Microsoft.Windows.StartMenuExperienceHost" -ErrorAction SilentlyContinue
         if ($startMenuHost) {
-            $startBinPath = Join-Path $env:LOCALAPPDATA "Packages\$($startMenuHost.PackageFamilyName)\LocalState\start2.bin"
+            $localStatePath = Join-Path $env:LOCALAPPDATA "Packages\$($startMenuHost.PackageFamilyName)\LocalState"
+            $startBinPath = Join-Path $localStatePath "start2.bin"
 
+            # Backup existing layout
             if (Test-Path $startBinPath) {
-                # Backup existing layout
                 Copy-Item $startBinPath "$startBinPath.backup" -Force -ErrorAction SilentlyContinue
                 Write-Log "Backed up existing Start layout to $startBinPath.backup" "INFO"
-
-                # Stop StartMenuExperienceHost to release file lock
-                Get-Process -Name "StartMenuExperienceHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 500
-
-                # Delete the start layout file
-                Remove-Item $startBinPath -Force -ErrorAction SilentlyContinue
-                Write-Log "Deleted Start Menu layout file - pins will reset to defaults on next login" "SUCCESS"
             }
-            else {
-                Write-Log "Start layout file not found at expected location" "WARN"
-            }
+
+            # Stop StartMenuExperienceHost to release file lock
+            Get-Process -Name "StartMenuExperienceHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+
+            # Decode and write empty start2.bin template
+            $emptyStart2Bytes = [Convert]::FromBase64String($emptyStart2BinBase64)
+            [System.IO.File]::WriteAllBytes($startBinPath, $emptyStart2Bytes)
+            Write-Log "Replaced Start Menu layout with empty template" "SUCCESS"
         }
         else {
             Write-Log "StartMenuExperienceHost package not found" "WARN"
         }
 
-        # Also clear the LayoutModification.json if it exists (for consistency)
-        $layoutJsonPath = "$env:LOCALAPPDATA\Microsoft\Windows\Shell\LayoutModification.json"
-        if (Test-Path $layoutJsonPath) {
-            Remove-Item $layoutJsonPath -Force -ErrorAction SilentlyContinue
+        # Create empty LayoutModification.json for new user profiles
+        $defaultUserShellPath = "$env:SystemDrive\Users\Default\AppData\Local\Microsoft\Windows\Shell"
+        if (-not (Test-Path $defaultUserShellPath)) {
+            New-Item -Path $defaultUserShellPath -ItemType Directory -Force | Out-Null
         }
+        $layoutJsonPath = Join-Path $defaultUserShellPath "LayoutModification.json"
+        $emptyLayoutJson = '{"pinnedList":[]}'
+        Set-Content -Path $layoutJsonPath -Value $emptyLayoutJson -Force -ErrorAction SilentlyContinue
+        Write-Log "Created empty LayoutModification.json for new user profiles" "SUCCESS"
 
-        Write-Log "Start Menu reset complete. After restart/sign-out, please manually pin: Explorer, Calculator, Snipping Tool" "SUCCESS"
+        # Also copy empty start2.bin to default user profile for new users
+        $defaultUserStartPath = "$env:SystemDrive\Users\Default\AppData\Local\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState"
+        if (-not (Test-Path $defaultUserStartPath)) {
+            New-Item -Path $defaultUserStartPath -ItemType Directory -Force | Out-Null
+        }
+        $defaultStartBinPath = Join-Path $defaultUserStartPath "start2.bin"
+        [System.IO.File]::WriteAllBytes($defaultStartBinPath, $emptyStart2Bytes)
+        Write-Log "Copied empty start2.bin to default user profile" "SUCCESS"
+
+        Write-Log "Start Menu cleared. Sign out and back in to see empty pinned area." "SUCCESS"
         return $true
     }
     catch {
-        Write-Log "Failed to reset Start Menu pins: $_" "ERROR"
+        Write-Log "Failed to clear Start Menu pins: $_" "ERROR"
         return $false
     }
 }
@@ -1453,7 +1465,7 @@ $settingsTooltips = @{
     "ExplorerThisPC" = "Opens File Explorer to 'This PC' view showing drives instead of Quick Access/Home"
     "ShowExtensions" = "Shows file extensions like .txt, .exe, .pdf - helps identify file types and spot malware"
     "CleanQuickAccess" = "Removes all pinned folders from Quick Access except Desktop and Downloads"
-    "StartPins" = "Resets pinned apps in Start Menu to Windows defaults (requires sign-out to take effect)"
+    "StartPins" = "Clears ALL pinned apps from Start Menu for a clean look (requires sign-out)"
 }
 
 # Taskbar section
@@ -1606,7 +1618,7 @@ $settingsYPos += $script:UI.ItemSpacing
 
 # Start Menu Pins (Win11 only)
 $ChkStartPins = New-Object System.Windows.Forms.CheckBox
-$ChkStartPins.Text = "Reset Start Menu pins to defaults (requires sign-out)"
+$ChkStartPins.Text = "Clear all Start Menu pinned apps (empty pins area)"
 $ChkStartPins.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
 $ChkStartPins.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
 $ChkStartPins.Checked = $IsWindows11
