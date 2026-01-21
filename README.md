@@ -24,7 +24,7 @@ A PowerShell GUI utility for IT admins to quickly set up and configure new Windo
 ### Option 1: Download and Run
 ```powershell
 # Download
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ptmrio/windows-powersetup/main/Windows-PC-Setup.ps1" -OutFile "$env:TEMP\Windows-PC-Setup.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ptmrio/windows-powersetup/master/Windows-PC-Setup.ps1" -OutFile "$env:TEMP\Windows-PC-Setup.ps1"
 
 # Run
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\Windows-PC-Setup.ps1"
