@@ -9,7 +9,7 @@
     - Install common applications via winget
 .NOTES
     Author: IT Admin Utility
-    Version: 2.0
+    Version: 2.1
     Supports: Windows 10 and Windows 11
 #>
 
@@ -45,7 +45,7 @@ $OSBuild = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion
 $OSName = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").ProductName
 $IsWindows11 = [int]$OSBuild -ge 22000
 
-Write-Host "Windows PC Setup Utility v2.0 Starting..."
+Write-Host "Windows PC Setup Utility v2.1 Starting..."
 Write-Host "OS: $OSName (Build $OSBuild)"
 Write-Host "Windows 11: $IsWindows11"
 Write-Host "Log file: $script:LogPath"
@@ -1241,11 +1241,243 @@ function Restart-Explorer {
 }
 
 # ============================================================================
+# SYSTEM REPAIR FUNCTIONS
+# ============================================================================
+
+function Test-WSUSEnvironment {
+    <#
+    .SYNOPSIS
+        Checks if the system is configured to use WSUS for Windows Updates.
+    .DESCRIPTION
+        Checks registry for WSUS server configuration. Enterprise environments
+        may need local source files for DISM repairs.
+    #>
+    try {
+        $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+        $wuServer = Get-ItemProperty -Path $wuPath -Name "WUServer" -ErrorAction SilentlyContinue
+        return ($null -ne $wuServer)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-RepairResultMessage {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Tool,
+        [Parameter(Mandatory)]
+        [int]$ExitCode
+    )
+
+    switch ($Tool) {
+        "DISM" {
+            switch ($ExitCode) {
+                0 { return "Success - Component store is healthy" }
+                default { return "Error (code $ExitCode) - Check $env:windir\Logs\DISM\dism.log" }
+            }
+        }
+        "SFC" {
+            switch ($ExitCode) {
+                0 { return "Success - No integrity violations found" }
+                default { return "Issues found (code $ExitCode) - Check $env:windir\Logs\CBS\CBS.log. Consider rebooting and re-running." }
+            }
+        }
+        "CHKDSK" {
+            switch ($ExitCode) {
+                0 { return "Success - No errors found" }
+                1 { return "Errors found and fixed" }
+                2 { return "Disk cleanup performed" }
+                3 { return "Could not check disk - try scheduling at boot" }
+                default { return "Completed with code $ExitCode" }
+            }
+        }
+        default { return "Completed with exit code $ExitCode" }
+    }
+}
+
+function Invoke-DISMRepair {
+    param(
+        [string]$SourcePath = "",
+        [switch]$LimitAccess
+    )
+
+    $startTime = Get-Date
+    $result = @{
+        Success = $false
+        ExitCode = -1
+        Message = ""
+        Duration = [TimeSpan]::Zero
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would run: DISM /Online /Cleanup-Image /RestoreHealth" "INFO"
+        $result.Success = $true
+        $result.ExitCode = 0
+        $result.Message = "[DRY RUN] Would repair Windows component store"
+        $result.Duration = [TimeSpan]::FromSeconds(1)
+        return $result
+    }
+
+    try {
+        Write-Log "Starting DISM repair (this may take 10-30 minutes)..." "INFO"
+        Update-Status "Running DISM - Repairing Windows component store..."
+
+        $arguments = "/Online /Cleanup-Image /RestoreHealth"
+        if ($SourcePath -and (Test-Path $SourcePath)) {
+            $arguments += " /Source:`"$SourcePath`""
+            if ($LimitAccess) {
+                $arguments += " /LimitAccess"
+            }
+            Write-Log "Using local source: $SourcePath" "INFO"
+        }
+
+        $process = Start-Process -FilePath "dism.exe" -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+        $result.ExitCode = $process.ExitCode
+        $result.Success = ($process.ExitCode -eq 0)
+        $result.Message = Get-RepairResultMessage -Tool "DISM" -ExitCode $process.ExitCode
+
+        if ($result.Success) {
+            Write-Log "DISM repair completed successfully" "SUCCESS"
+        } else {
+            Write-Log "DISM repair completed with issues (exit code: $($process.ExitCode))" "WARN"
+        }
+    }
+    catch {
+        $result.Message = "Error: $_"
+        Write-Log "DISM repair failed: $_" "ERROR"
+    }
+
+    $result.Duration = (Get-Date) - $startTime
+    return $result
+}
+
+function Invoke-SFCRepair {
+    $startTime = Get-Date
+    $result = @{
+        Success = $false
+        ExitCode = -1
+        Message = ""
+        Duration = [TimeSpan]::Zero
+        IssuesFound = $false
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would run: sfc.exe /scannow" "INFO"
+        $result.Success = $true
+        $result.ExitCode = 0
+        $result.Message = "[DRY RUN] Would scan and repair system files"
+        $result.Duration = [TimeSpan]::FromSeconds(1)
+        return $result
+    }
+
+    try {
+        Write-Log "Starting SFC scan (this may take 5-15 minutes)..." "INFO"
+        Update-Status "Running SFC - Scanning system files..."
+
+        $process = Start-Process -FilePath "sfc.exe" -ArgumentList "/scannow" -Wait -PassThru -WindowStyle Hidden
+        $result.ExitCode = $process.ExitCode
+        $result.Success = ($process.ExitCode -eq 0)
+        $result.IssuesFound = ($process.ExitCode -ne 0)
+        $result.Message = Get-RepairResultMessage -Tool "SFC" -ExitCode $process.ExitCode
+
+        if ($result.Success) {
+            Write-Log "SFC scan completed - no integrity violations" "SUCCESS"
+        } else {
+            Write-Log "SFC scan found issues (exit code: $($process.ExitCode))" "WARN"
+        }
+    }
+    catch {
+        $result.Message = "Error: $_"
+        Write-Log "SFC scan failed: $_" "ERROR"
+    }
+
+    $result.Duration = (Get-Date) - $startTime
+    return $result
+}
+
+function Invoke-CHKDSKScan {
+    param(
+        [string]$DriveLetter = "C"
+    )
+
+    $startTime = Get-Date
+    $result = @{
+        Success = $false
+        ExitCode = -1
+        Message = ""
+        Duration = [TimeSpan]::Zero
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would run: chkdsk.exe ${DriveLetter}: /scan" "INFO"
+        $result.Success = $true
+        $result.ExitCode = 0
+        $result.Message = "[DRY RUN] Would scan disk for errors (read-only)"
+        $result.Duration = [TimeSpan]::FromSeconds(1)
+        return $result
+    }
+
+    try {
+        Write-Log "Starting CHKDSK scan on ${DriveLetter}: (this may take 5-30 minutes)..." "INFO"
+        Update-Status "Running CHKDSK - Scanning disk ${DriveLetter}:..."
+
+        $process = Start-Process -FilePath "chkdsk.exe" -ArgumentList "${DriveLetter}: /scan" -Wait -PassThru -WindowStyle Hidden
+        $result.ExitCode = $process.ExitCode
+        $result.Success = ($process.ExitCode -le 1)
+        $result.Message = Get-RepairResultMessage -Tool "CHKDSK" -ExitCode $process.ExitCode
+
+        if ($result.ExitCode -eq 0) {
+            Write-Log "CHKDSK scan completed - no errors found" "SUCCESS"
+        } elseif ($result.ExitCode -eq 1) {
+            Write-Log "CHKDSK found and fixed errors" "SUCCESS"
+        } else {
+            Write-Log "CHKDSK completed with issues (exit code: $($process.ExitCode))" "WARN"
+        }
+    }
+    catch {
+        $result.Message = "Error: $_"
+        Write-Log "CHKDSK scan failed: $_" "ERROR"
+    }
+
+    $result.Duration = (Get-Date) - $startTime
+    return $result
+}
+
+function Update-RepairResultDisplay {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Tool,
+        [Parameter(Mandatory)]
+        [hashtable]$Result,
+        [Parameter(Mandatory)]
+        [System.Windows.Forms.Label]$Label
+    )
+
+    $durationStr = if ($Result.Duration.TotalSeconds -gt 0) {
+        " ({0:N0}s)" -f $Result.Duration.TotalSeconds
+    } else { "" }
+
+    $Label.Text = "${Tool}: $($Result.Message)$durationStr"
+
+    if ($Result.Success) {
+        $Label.ForeColor = $script:UI.SuccessGreen
+    } elseif ($Result.ExitCode -eq -1) {
+        $Label.ForeColor = $script:UI.ErrorRed
+    } else {
+        $Label.ForeColor = $script:UI.WarningOrange
+    }
+
+    $Label.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+# ============================================================================
 # CREATE MAIN FORM
 # ============================================================================
 
 $MainForm = New-Object System.Windows.Forms.Form
-$MainForm.Text = "Windows PC Setup Utility v2.0"
+$MainForm.Text = "Windows PC Setup Utility v2.1"
 $MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
@@ -1987,10 +2219,384 @@ $InstallAppsPanel.Controls.Add($BtnInstallApps)
 $TabInstallApps.Controls.Add($InstallAppsPanel)
 
 # ============================================================================
+# TAB 4: SYSTEM REPAIR
+# ============================================================================
+
+$TabRepair = New-Object System.Windows.Forms.TabPage
+$TabRepair.Text = "System Repair"
+$TabRepair.Padding = New-Object System.Windows.Forms.Padding(10)
+
+$RepairPanel = New-Object System.Windows.Forms.Panel
+$RepairPanel.Dock = "Fill"
+$RepairPanel.AutoScroll = $true
+
+# Introduction text
+$repairYPos = New-IntroText -Panel $RepairPanel -Text "Run Windows system repair tools to fix corrupted files and disk errors. Recommended order: DISM -> SFC -> CHKDSK." -YPosition 8
+
+# Check for WSUS environment
+$isWSUS = Test-WSUSEnvironment
+if ($isWSUS) {
+    # WSUS Warning Panel
+    $WSUSWarningPanel = New-Object System.Windows.Forms.Panel
+    $WSUSWarningPanel.Location = New-Object System.Drawing.Point(20, $repairYPos)
+    $WSUSWarningPanel.Size = New-Object System.Drawing.Size(610, 70)
+    $WSUSWarningPanel.BackColor = $script:UI.WarningBg
+    $WSUSWarningPanel.BorderStyle = "FixedSingle"
+    $RepairPanel.Controls.Add($WSUSWarningPanel)
+
+    $LblWSUSWarning = New-Object System.Windows.Forms.Label
+    $LblWSUSWarning.Text = "Enterprise environment detected. DISM may require a local Windows source for repairs."
+    $LblWSUSWarning.Location = New-Object System.Drawing.Point(10, 8)
+    $LblWSUSWarning.Size = New-Object System.Drawing.Size(590, 20)
+    $LblWSUSWarning.ForeColor = $script:UI.WarningOrange
+    $LblWSUSWarning.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $WSUSWarningPanel.Controls.Add($LblWSUSWarning)
+
+    $script:ChkUseLocalSource = New-Object System.Windows.Forms.CheckBox
+    $script:ChkUseLocalSource.Text = "Use local source:"
+    $script:ChkUseLocalSource.Location = New-Object System.Drawing.Point(10, 35)
+    $script:ChkUseLocalSource.Size = New-Object System.Drawing.Size(120, 24)
+    $WSUSWarningPanel.Controls.Add($script:ChkUseLocalSource)
+
+    $script:TxtSourcePath = New-Object System.Windows.Forms.TextBox
+    $script:TxtSourcePath.Location = New-Object System.Drawing.Point(130, 36)
+    $script:TxtSourcePath.Size = New-Object System.Drawing.Size(380, 22)
+    $script:TxtSourcePath.Enabled = $false
+    $WSUSWarningPanel.Controls.Add($script:TxtSourcePath)
+
+    $BtnBrowseSource = New-Object System.Windows.Forms.Button
+    $BtnBrowseSource.Text = "Browse"
+    $BtnBrowseSource.Location = New-Object System.Drawing.Point(520, 35)
+    $BtnBrowseSource.Size = New-Object System.Drawing.Size(70, 24)
+    $BtnBrowseSource.Enabled = $false
+    $BtnBrowseSource.Add_Click({
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = "Select Windows source folder (e.g., install.wim location)"
+        if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $script:TxtSourcePath.Text = $folderBrowser.SelectedPath
+        }
+    })
+    $WSUSWarningPanel.Controls.Add($BtnBrowseSource)
+
+    $script:ChkUseLocalSource.Add_CheckedChanged({
+        $script:TxtSourcePath.Enabled = $this.Checked
+        $BtnBrowseSource.Enabled = $this.Checked
+    })
+
+    $repairYPos += 80
+}
+
+# Repair Tools Section
+$repairYPos = New-SectionHeader -Panel $RepairPanel -Text "Repair Tools (DISM -> SFC -> CHKDSK)" -YPosition $repairYPos
+
+# Tool checkboxes and run buttons
+$script:RepairCheckboxes = @()
+
+# DISM checkbox and button
+$ChkDISM = New-Object System.Windows.Forms.CheckBox
+$ChkDISM.Text = "DISM - Repair Windows component store"
+$ChkDISM.Tag = "DISM"
+$ChkDISM.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $repairYPos)
+$ChkDISM.Size = New-Object System.Drawing.Size(350, $script:UI.CheckboxHeight)
+$ChkDISM.Checked = $true
+$script:MainTooltip.SetToolTip($ChkDISM, "DISM repairs the Windows component store that SFC uses. Log: $env:windir\Logs\DISM\dism.log")
+$RepairPanel.Controls.Add($ChkDISM)
+$script:RepairCheckboxes += $ChkDISM
+
+$BtnRunDISM = New-Object System.Windows.Forms.Button
+$BtnRunDISM.Text = "Run DISM"
+$BtnRunDISM.Location = New-Object System.Drawing.Point(500, $repairYPos)
+$BtnRunDISM.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
+$BtnRunDISM.Add_Click({
+    $script:DryRun = $script:ChkDryRun.Checked
+    $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+
+    $confirmResult = [System.Windows.Forms.MessageBox]::Show(
+        "${dryRunMsg}Run DISM repair?`n`nThis repairs the Windows component store and may take 10-30 minutes.`n`nLog file: $env:windir\Logs\DISM\dism.log",
+        "Confirm DISM Repair",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Set-ButtonDisabled -Button $BtnRunDISM -WorkingText "Running..."
+
+        $sourcePath = ""
+        $limitAccess = $false
+        if ($isWSUS -and $script:ChkUseLocalSource.Checked -and $script:TxtSourcePath.Text) {
+            $sourcePath = $script:TxtSourcePath.Text
+            $limitAccess = $true
+        }
+
+        $result = Invoke-DISMRepair -SourcePath $sourcePath -LimitAccess:$limitAccess
+        Update-RepairResultDisplay -Tool "DISM" -Result $result -Label $script:LblDISMResult
+
+        Set-ButtonEnabled -Button $BtnRunDISM
+        Update-Status "${dryRunMsg}DISM repair completed"
+        $script:DryRun = $false
+    }
+})
+$RepairPanel.Controls.Add($BtnRunDISM)
+$repairYPos += $script:UI.ItemSpacing + 4
+
+# SFC checkbox and button
+$ChkSFC = New-Object System.Windows.Forms.CheckBox
+$ChkSFC.Text = "SFC - System File Checker"
+$ChkSFC.Tag = "SFC"
+$ChkSFC.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $repairYPos)
+$ChkSFC.Size = New-Object System.Drawing.Size(350, $script:UI.CheckboxHeight)
+$ChkSFC.Checked = $true
+$script:MainTooltip.SetToolTip($ChkSFC, "SFC scans and repairs protected Windows system files. Log: $env:windir\Logs\CBS\CBS.log")
+$RepairPanel.Controls.Add($ChkSFC)
+$script:RepairCheckboxes += $ChkSFC
+
+$BtnRunSFC = New-Object System.Windows.Forms.Button
+$BtnRunSFC.Text = "Run SFC"
+$BtnRunSFC.Location = New-Object System.Drawing.Point(500, $repairYPos)
+$BtnRunSFC.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
+$BtnRunSFC.Add_Click({
+    $script:DryRun = $script:ChkDryRun.Checked
+    $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+
+    $confirmResult = [System.Windows.Forms.MessageBox]::Show(
+        "${dryRunMsg}Run SFC scan?`n`nThis scans and repairs Windows system files and may take 5-15 minutes.`n`nNote: Run DISM first if not already done.`n`nLog file: $env:windir\Logs\CBS\CBS.log",
+        "Confirm SFC Scan",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Set-ButtonDisabled -Button $BtnRunSFC -WorkingText "Running..."
+
+        $result = Invoke-SFCRepair
+        Update-RepairResultDisplay -Tool "SFC" -Result $result -Label $script:LblSFCResult
+
+        Set-ButtonEnabled -Button $BtnRunSFC
+        Update-Status "${dryRunMsg}SFC scan completed"
+        $script:DryRun = $false
+    }
+})
+$RepairPanel.Controls.Add($BtnRunSFC)
+$repairYPos += $script:UI.ItemSpacing + 4
+
+# CHKDSK checkbox and button
+$ChkCHKDSK = New-Object System.Windows.Forms.CheckBox
+$ChkCHKDSK.Text = "CHKDSK - Check disk (read-only scan)"
+$ChkCHKDSK.Tag = "CHKDSK"
+$ChkCHKDSK.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $repairYPos)
+$ChkCHKDSK.Size = New-Object System.Drawing.Size(350, $script:UI.CheckboxHeight)
+$ChkCHKDSK.Checked = $false
+$script:MainTooltip.SetToolTip($ChkCHKDSK, "CHKDSK scans the disk for file system errors (read-only /scan mode)")
+$RepairPanel.Controls.Add($ChkCHKDSK)
+$script:RepairCheckboxes += $ChkCHKDSK
+
+$BtnRunCHKDSK = New-Object System.Windows.Forms.Button
+$BtnRunCHKDSK.Text = "Run CHKDSK"
+$BtnRunCHKDSK.Location = New-Object System.Drawing.Point(500, $repairYPos)
+$BtnRunCHKDSK.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
+$BtnRunCHKDSK.Add_Click({
+    $script:DryRun = $script:ChkDryRun.Checked
+    $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+
+    $confirmResult = [System.Windows.Forms.MessageBox]::Show(
+        "${dryRunMsg}Run CHKDSK scan?`n`nThis scans the C: drive for errors (read-only) and may take 5-30 minutes.`n`nNote: This uses /scan mode which doesn't require a reboot.",
+        "Confirm CHKDSK Scan",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes) {
+        Set-ButtonDisabled -Button $BtnRunCHKDSK -WorkingText "Running..."
+
+        $result = Invoke-CHKDSKScan -DriveLetter "C"
+        Update-RepairResultDisplay -Tool "CHKDSK" -Result $result -Label $script:LblCHKDSKResult
+
+        Set-ButtonEnabled -Button $BtnRunCHKDSK
+        Update-Status "${dryRunMsg}CHKDSK scan completed"
+        $script:DryRun = $false
+    }
+})
+$RepairPanel.Controls.Add($BtnRunCHKDSK)
+$repairYPos += $script:UI.ItemSpacing + 10
+
+# Results Section
+$repairYPos = New-SectionHeader -Panel $RepairPanel -Text "Results" -YPosition $repairYPos
+
+# Results panel with border
+$ResultsPanel = New-Object System.Windows.Forms.Panel
+$ResultsPanel.Location = New-Object System.Drawing.Point(20, $repairYPos)
+$ResultsPanel.Size = New-Object System.Drawing.Size(610, 80)
+$ResultsPanel.BorderStyle = "FixedSingle"
+$ResultsPanel.BackColor = [System.Drawing.Color]::White
+$RepairPanel.Controls.Add($ResultsPanel)
+
+# Result labels
+$script:LblDISMResult = New-Object System.Windows.Forms.Label
+$script:LblDISMResult.Text = "DISM: Not run"
+$script:LblDISMResult.Location = New-Object System.Drawing.Point(10, 8)
+$script:LblDISMResult.Size = New-Object System.Drawing.Size(585, 20)
+$script:LblDISMResult.ForeColor = $script:UI.SubtleGray
+$ResultsPanel.Controls.Add($script:LblDISMResult)
+
+$script:LblSFCResult = New-Object System.Windows.Forms.Label
+$script:LblSFCResult.Text = "SFC: Not run"
+$script:LblSFCResult.Location = New-Object System.Drawing.Point(10, 30)
+$script:LblSFCResult.Size = New-Object System.Drawing.Size(585, 20)
+$script:LblSFCResult.ForeColor = $script:UI.SubtleGray
+$ResultsPanel.Controls.Add($script:LblSFCResult)
+
+$script:LblCHKDSKResult = New-Object System.Windows.Forms.Label
+$script:LblCHKDSKResult.Text = "CHKDSK: Not run"
+$script:LblCHKDSKResult.Location = New-Object System.Drawing.Point(10, 52)
+$script:LblCHKDSKResult.Size = New-Object System.Drawing.Size(585, 20)
+$script:LblCHKDSKResult.ForeColor = $script:UI.SubtleGray
+$ResultsPanel.Controls.Add($script:LblCHKDSKResult)
+
+$repairYPos += 90
+
+# Bottom buttons
+# Selection count label
+$script:RepairSelectionLabel = New-Object System.Windows.Forms.Label
+$script:RepairSelectionLabel.Location = New-Object System.Drawing.Point(250, ($repairYPos + 14))
+$script:RepairSelectionLabel.Size = New-Object System.Drawing.Size(150, 20)
+$script:RepairSelectionLabel.ForeColor = $script:UI.SubtleGray
+$RepairPanel.Controls.Add($script:RepairSelectionLabel)
+
+# Update selection on checkbox changes
+foreach ($chk in $script:RepairCheckboxes) {
+    $chk.Add_CheckedChanged({
+        Update-SelectionCount -Label $script:RepairSelectionLabel -Checkboxes $script:RepairCheckboxes -ItemType "tool"
+    })
+}
+Update-SelectionCount -Label $script:RepairSelectionLabel -Checkboxes $script:RepairCheckboxes -ItemType "tool"
+
+# Select All / Deselect All buttons
+$BtnSelectAllRepair = New-Object System.Windows.Forms.Button
+$BtnSelectAllRepair.Text = "Select All"
+$BtnSelectAllRepair.Location = New-Object System.Drawing.Point(20, ($repairYPos + 10))
+$BtnSelectAllRepair.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
+$BtnSelectAllRepair.Add_Click({
+    foreach ($chk in $script:RepairCheckboxes) { $chk.Checked = $true }
+})
+$RepairPanel.Controls.Add($BtnSelectAllRepair)
+
+$BtnDeselectAllRepair = New-Object System.Windows.Forms.Button
+$BtnDeselectAllRepair.Text = "Deselect All"
+$BtnDeselectAllRepair.Location = New-Object System.Drawing.Point(130, ($repairYPos + 10))
+$BtnDeselectAllRepair.Size = New-Object System.Drawing.Size(100, $script:UI.ButtonHeight)
+$BtnDeselectAllRepair.Add_Click({
+    foreach ($chk in $script:RepairCheckboxes) { $chk.Checked = $false }
+})
+$RepairPanel.Controls.Add($BtnDeselectAllRepair)
+
+# Run Selected Repairs button
+$BtnRunSelectedRepairs = New-Object System.Windows.Forms.Button
+$BtnRunSelectedRepairs.Text = "&Run Selected Repairs"
+$BtnRunSelectedRepairs.Location = New-Object System.Drawing.Point(450, ($repairYPos + 10))
+$BtnRunSelectedRepairs.Size = New-Object System.Drawing.Size(180, $script:UI.ButtonHeight)
+$BtnRunSelectedRepairs.BackColor = $script:UI.AccentColor
+$BtnRunSelectedRepairs.ForeColor = [System.Drawing.Color]::White
+$BtnRunSelectedRepairs.FlatStyle = "Flat"
+Add-ButtonHoverEffect -Button $BtnRunSelectedRepairs
+$script:MainTooltip.SetToolTip($BtnRunSelectedRepairs, "Run all selected repair tools in sequence (Alt+R)")
+
+$BtnRunSelectedRepairs.Add_Click({
+    $selectedTools = @($script:RepairCheckboxes | Where-Object { $_.Checked } | ForEach-Object { $_.Tag })
+    $selectedCount = $selectedTools.Count
+
+    if ($selectedCount -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No repair tools selected.", "System Repair", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+
+    $script:DryRun = $script:ChkDryRun.Checked
+    $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+
+    $toolList = $selectedTools -join ", "
+    $confirmResult = [System.Windows.Forms.MessageBox]::Show(
+        "${dryRunMsg}Run the following repair tools?`n`n$toolList`n`nTools run in order: DISM -> SFC -> CHKDSK`nThis may take a significant amount of time.",
+        "Confirm System Repair",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+
+    Set-ButtonDisabled -Button $BtnRunSelectedRepairs -WorkingText "Running..."
+    $successCount = 0
+    $failCount = 0
+
+    if ($script:DryRun) {
+        Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
+    }
+
+    try {
+        # Run DISM first (if selected)
+        if ($selectedTools -contains "DISM") {
+            Update-Progress -Current 1 -Total $selectedCount -CurrentItem "DISM"
+
+            $sourcePath = ""
+            $limitAccess = $false
+            if ($isWSUS -and $script:ChkUseLocalSource.Checked -and $script:TxtSourcePath.Text) {
+                $sourcePath = $script:TxtSourcePath.Text
+                $limitAccess = $true
+            }
+
+            $result = Invoke-DISMRepair -SourcePath $sourcePath -LimitAccess:$limitAccess
+            Update-RepairResultDisplay -Tool "DISM" -Result $result -Label $script:LblDISMResult
+            if ($result.Success) { $successCount++ } else { $failCount++ }
+        }
+
+        # Run SFC second (if selected)
+        if ($selectedTools -contains "SFC") {
+            $currentNum = if ($selectedTools -contains "DISM") { 2 } else { 1 }
+            Update-Progress -Current $currentNum -Total $selectedCount -CurrentItem "SFC"
+
+            $result = Invoke-SFCRepair
+            Update-RepairResultDisplay -Tool "SFC" -Result $result -Label $script:LblSFCResult
+            if ($result.Success) { $successCount++ } else { $failCount++ }
+        }
+
+        # Run CHKDSK last (if selected)
+        if ($selectedTools -contains "CHKDSK") {
+            Update-Progress -Current $selectedCount -Total $selectedCount -CurrentItem "CHKDSK"
+
+            $result = Invoke-CHKDSKScan -DriveLetter "C"
+            Update-RepairResultDisplay -Tool "CHKDSK" -Result $result -Label $script:LblCHKDSKResult
+            if ($result.Success) { $successCount++ } else { $failCount++ }
+        }
+
+        Hide-Progress
+        Update-Status "${dryRunMsg}System repair complete! Success: $successCount, Issues: $failCount"
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "${dryRunMsg}System repair complete!`n`nSuccessful: $successCount`nWith Issues: $failCount`n`nCheck the Results panel for details.`n`nLog: $script:LogPath",
+            "System Repair",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+    catch {
+        Write-Log "Error during system repair: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        Hide-Progress
+        Set-ButtonEnabled -Button $BtnRunSelectedRepairs
+        $script:DryRun = $false
+    }
+})
+$RepairPanel.Controls.Add($BtnRunSelectedRepairs)
+
+$TabRepair.Controls.Add($RepairPanel)
+
+# ============================================================================
 # ADD TABS TO TAB CONTROL
 # ============================================================================
 
-$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps))
+$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps, $TabRepair))
 $MainForm.Controls.Add($TabControl)
 
 # ============================================================================
@@ -2058,7 +2664,7 @@ $MainForm.Controls.Add($script:StatusLabel)
 
 # Version and help info
 $LblVersion = New-Object System.Windows.Forms.Label
-$LblVersion.Text = "v2.0 | Keyboard shortcuts: Alt+R (Remove), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Text = "v2.1 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
 $LblVersion.Location = New-Object System.Drawing.Point(10, 530)
 $LblVersion.Size = New-Object System.Drawing.Size(665, 18)
 $LblVersion.ForeColor = $script:UI.SubtleGray
