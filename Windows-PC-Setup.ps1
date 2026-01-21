@@ -1272,7 +1272,7 @@ $TabControl.Size = New-Object System.Drawing.Size(665, 450)
 # ============================================================================
 
 $TabBloatware = New-Object System.Windows.Forms.TabPage
-$TabBloatware.Text = "&Remove Bloatware"
+$TabBloatware.Text = "Remove Bloatware"
 $TabBloatware.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $BloatwarePanel = New-Object System.Windows.Forms.Panel
@@ -1523,7 +1523,7 @@ $TabBloatware.Controls.Add($BloatwarePanel)
 # ============================================================================
 
 $TabSettings = New-Object System.Windows.Forms.TabPage
-$TabSettings.Text = "&Settings"
+$TabSettings.Text = "Settings"
 $TabSettings.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $SettingsPanel = New-Object System.Windows.Forms.Panel
@@ -1801,7 +1801,7 @@ $TabSettings.Controls.Add($SettingsPanel)
 # ============================================================================
 
 $TabInstallApps = New-Object System.Windows.Forms.TabPage
-$TabInstallApps.Text = "&Install Apps"
+$TabInstallApps.Text = "Install Apps"
 $TabInstallApps.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $InstallAppsPanel = New-Object System.Windows.Forms.Panel
