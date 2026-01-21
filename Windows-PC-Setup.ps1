@@ -607,9 +607,58 @@ function Remove-BloatwareApp {
 function Test-WingetInstalled {
     try {
         $wingetPath = Get-Command winget -ErrorAction SilentlyContinue
-        return ($null -ne $wingetPath)
+        if ($null -eq $wingetPath) { return $false }
+
+        # Check version (need 1.4+ for full functionality)
+        $versionOutput = winget -v 2>&1
+        if ($versionOutput -match 'v(\d+)\.(\d+)') {
+            $major = [int]$matches[1]
+            $minor = [int]$matches[2]
+            if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 4)) {
+                Write-Log "Winget version $versionOutput is outdated (need v1.4+)" "WARN"
+            }
+        }
+        return $true
     }
     catch { return $false }
+}
+
+function Initialize-Winget {
+    <#
+    .SYNOPSIS
+        Initializes winget for first-time use by accepting agreements and updating sources.
+        This should be called before any winget install operations.
+    #>
+    if ($script:DryRun) {
+        Write-Log "Would initialize winget (accept agreements, update sources)" "INFO"
+        return $true
+    }
+
+    try {
+        Update-Status "Initializing winget..."
+
+        # Accept source agreements and reset sources
+        # This handles first-run scenarios where agreements haven't been accepted
+        Write-Log "Accepting winget source agreements..." "INFO"
+
+        # First, try to add/reset the winget source with agreements accepted
+        $sourceResult = winget source reset --force 2>&1
+        Write-Log "Winget source reset: $sourceResult" "INFO"
+
+        # Update sources with agreement flags
+        Update-Status "Updating winget package sources..."
+        $updateResult = winget source update --accept-source-agreements 2>&1
+        Write-Log "Winget sources updated" "SUCCESS"
+
+        # Do a simple list to ensure everything is working
+        $null = winget list --count 1 --accept-source-agreements --disable-interactivity 2>&1
+
+        return $true
+    }
+    catch {
+        Write-Log "Failed to initialize winget: $_" "WARN"
+        return $false
+    }
 }
 
 function Update-WingetSources {
@@ -620,7 +669,7 @@ function Update-WingetSources {
 
     try {
         Update-Status "Updating winget sources..."
-        winget source update 2>&1 | Out-Null
+        winget source update --accept-source-agreements 2>&1 | Out-Null
         Write-Log "Winget sources updated" "SUCCESS"
         return $true
     }
@@ -638,6 +687,16 @@ function Install-WingetApp {
         return $true
     }
 
+    # Winget exit codes reference: https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md
+    $EXIT_SUCCESS = 0
+    $EXIT_NO_APPLICABLE_UPGRADE = -1978335189  # Already installed/up to date
+    $EXIT_ALREADY_INSTALLED = -1978334963      # APPINSTALLER_CLI_ERROR_INSTALL_ALREADY_INSTALLED
+    $EXIT_DOWNGRADE = -1978334962              # APPINSTALLER_CLI_ERROR_INSTALL_DOWNGRADE
+    $EXIT_HASH_MISMATCH = -1978335215          # APPINSTALLER_CLI_ERROR_INSTALLER_HASH_MISMATCH
+    $EXIT_SOURCE_AGREEMENTS = -1978335162      # APPINSTALLER_CLI_ERROR_SOURCE_AGREEMENTS_NOT_ACCEPTED
+    $EXIT_PACKAGE_AGREEMENTS = -1978335167     # APPINSTALLER_CLI_ERROR_PACKAGE_AGREEMENTS_NOT_ACCEPTED
+    $EXIT_NETWORK_TIMEOUT = -2147012889        # Network timeout
+
     $maxRetries = 3
     $retryDelay = 5
 
@@ -650,29 +709,53 @@ function Install-WingetApp {
                 Update-Status "Installing $DisplayName..."
             }
 
-            # Use --disable-interactivity for cleaner automation
-            $result = winget install --id $WingetId --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+            # Use all flags to ensure non-interactive operation
+            $result = winget install --id $WingetId --silent --accept-package-agreements --accept-source-agreements --disable-interactivity --source winget 2>&1
 
-            if ($LASTEXITCODE -eq 0) {
-                Write-Log "Successfully installed: $DisplayName" "SUCCESS"
-                return $true
-            }
-            elseif ($LASTEXITCODE -eq -1978335189) {
-                Write-Log "$DisplayName is already installed/up to date" "INFO"
-                return $true
-            }
-            elseif ($LASTEXITCODE -eq -2147012889) {
-                # Network timeout error - retry
-                Write-Log "Network timeout for $DisplayName (attempt $attempt of $maxRetries)" "WARN"
-                if ($attempt -eq $maxRetries) {
-                    Write-Log "Failed to install $DisplayName after $maxRetries attempts - network timeout. Check internet connection or try again later." "ERROR"
+            switch ($LASTEXITCODE) {
+                $EXIT_SUCCESS {
+                    Write-Log "Successfully installed: $DisplayName" "SUCCESS"
+                    return $true
+                }
+                $EXIT_NO_APPLICABLE_UPGRADE {
+                    Write-Log "$DisplayName is already installed/up to date" "INFO"
+                    return $true
+                }
+                $EXIT_ALREADY_INSTALLED {
+                    Write-Log "$DisplayName is already installed" "INFO"
+                    return $true
+                }
+                $EXIT_DOWNGRADE {
+                    Write-Log "${DisplayName}: newer version already installed" "INFO"
+                    return $true
+                }
+                $EXIT_HASH_MISMATCH {
+                    # Package hash mismatch - the package manifest may be outdated
+                    Write-Log "${DisplayName}: installer hash mismatch (package may be temporarily outdated in winget repo). Try again later or install manually." "WARN"
                     return $false
                 }
-                # Continue to next retry
-            }
-            else {
-                Write-Log "Failed to install $DisplayName (Exit code: $LASTEXITCODE)" "ERROR"
-                return $false
+                $EXIT_SOURCE_AGREEMENTS {
+                    Write-Log "${DisplayName}: source agreements not accepted - reinitializing winget..." "WARN"
+                    Initialize-Winget
+                    # Continue to retry
+                }
+                $EXIT_PACKAGE_AGREEMENTS {
+                    Write-Log "${DisplayName}: package agreements issue - retrying..." "WARN"
+                    # Continue to retry
+                }
+                $EXIT_NETWORK_TIMEOUT {
+                    Write-Log "Network timeout for $DisplayName (attempt $attempt of $maxRetries)" "WARN"
+                    if ($attempt -eq $maxRetries) {
+                        Write-Log "Failed to install $DisplayName after $maxRetries attempts - network timeout" "ERROR"
+                        return $false
+                    }
+                    # Continue to retry
+                }
+                default {
+                    Write-Log "Failed to install $DisplayName (Exit code: $LASTEXITCODE)" "ERROR"
+                    Write-Log "Output: $result" "ERROR"
+                    return $false
+                }
             }
         }
         catch {
@@ -1859,7 +1942,9 @@ $BtnInstallApps.Add_Click({
     try {
         $appsToInstall = @($script:AppCheckboxes | Where-Object { $_.Checked })
         if ($appsToInstall.Count -gt 0 -and -not $script:DryRun) {
-            Update-WingetSources
+            # Initialize winget first (accepts agreements, updates sources)
+            # This is critical for first-run scenarios
+            Initialize-Winget
         }
 
         foreach ($chk in $script:AppCheckboxes) {
