@@ -4,6 +4,20 @@ A PowerShell GUI utility for IT admins to quickly set up and configure new Windo
 
 **By [SPQRK Web Solutions](https://spqrk.net)**
 
+## Why This Exists
+
+I set up new PCs regularly—whether it's a fresh install, a client machine, or fixing a broken system. Every time, it's the same routine: remove bloatware, tweak taskbar settings, run `sfc /scannow`, install the usual apps...
+
+This is my **opinionated automation** of that entire process. Instead of clicking through 47 settings dialogs and typing the same PowerShell commands, I click a few checkboxes and walk away.
+
+If you also find yourself:
+- Setting up Windows PCs more than once a year
+- Running SFC/DISM to fix corrupted system files
+- Uninstalling Candy Crush for the hundredth time
+- Wishing Windows had sane defaults
+
+...this tool is for you.
+
 ## Features
 
 - **Remove Bloatware** - Uninstall pre-installed apps (Candy Crush, TikTok, McAfee, etc.)
@@ -53,6 +67,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 | Storage Sense | Downloads 14 days, Recycle Bin 30 days |
 | Power (AC) | Display off 10min, never sleep |
 | Power (Battery) | Sleep after 1 hour |
+
+## Support This Project ☕
+
+If this saved you time, consider buying me a beer!
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github)](https://github.com/sponsors/ptmrio)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=ko-fi)](https://ko-fi.com/spqrk)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?logo=paypal)](https://paypal.me/realSPQRK)
 
 ## Disclaimer
 
