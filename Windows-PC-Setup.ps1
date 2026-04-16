@@ -9,7 +9,7 @@
     - Install common applications via winget
 .NOTES
     Author: IT Admin Utility
-    Version: 2.1
+    Version: 2.2
     Supports: Windows 10 and Windows 11
 #>
 
@@ -42,10 +42,12 @@ Start-Transcript -Path $script:LogPath -Append
 
 # Detect Windows version
 $OSBuild = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
-$OSName = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").ProductName
+$OSNameRaw = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").ProductName
 $IsWindows11 = [int]$OSBuild -ge 22000
+# ProductName registry value is unreliable on Win11 (often still says "Windows 10")
+$OSName = if ($IsWindows11) { $OSNameRaw -replace 'Windows 10', 'Windows 11' } else { $OSNameRaw }
 
-Write-Host "Windows PC Setup Utility v2.1 Starting..."
+Write-Host "Windows PC Setup Utility v2.2 Starting..."
 Write-Host "OS: $OSName (Build $OSBuild)"
 Write-Host "Windows 11: $IsWindows11"
 Write-Host "Log file: $script:LogPath"
@@ -229,6 +231,7 @@ $WingetApps = @(
     @{ Name = "Google Chrome"; WingetId = "Google.Chrome"; Category = "Browser" },
     @{ Name = "Brave Browser"; WingetId = "Brave.Brave"; Category = "Browser" },
     @{ Name = "Adobe Acrobat Reader"; WingetId = "Adobe.Acrobat.Reader.64-bit"; Category = "PDF" },
+    @{ Name = "PDFgear"; WingetId = "PDFgear.PDFgear"; Category = "PDF" },
     @{ Name = "Google Drive"; WingetId = "Google.GoogleDrive"; Category = "Cloud" },
     @{ Name = "Proton Pass"; WingetId = "Proton.ProtonPass"; Category = "Security" },
     @{ Name = "Todoist"; WingetId = "Doist.Todoist"; Category = "Productivity" },
@@ -866,27 +869,100 @@ function Hide-StartMenuRecommended {
     try {
         Update-Status "Hiding Start Menu Recommended section..."
 
-        # Create Explorer policy key if needed
+        $advancedPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+        $startPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Start"
         $explorerPolicyPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\Explorer"
+
+        # Ensure registry paths exist
         if (!(Test-Path $explorerPolicyPath)) {
             New-Item -Path $explorerPolicyPath -Force | Out-Null
         }
+        if (!(Test-Path $startPath)) {
+            New-Item -Path $startPath -Force | Out-Null
+        }
 
-        # Hide Recommended section (Note: Only officially works on Windows 11 SE, but worth trying)
+        # User preference path — works on new Start menu (Sophia Script approach)
+        Set-ItemProperty -Path $startPath -Name "HideRecommendedSection" -Type DWord -Value 1
+        Set-ItemProperty -Path $startPath -Name "ShowRecentList" -Type DWord -Value 0
+        Set-ItemProperty -Path $startPath -Name "ShowFrequentList" -Type DWord -Value 0
+
+        # Policy path — fallback for older Win11 builds (22H2-24H2 pre-update, Pro+ only)
         Set-ItemProperty -Path $explorerPolicyPath -Name "HideRecommendedSection" -Type DWord -Value 1
 
-        # Disable document tracking (clears Recommended items)
-        $advancedPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+        # Disable individual recommendation data sources
         Set-ItemProperty -Path $advancedPath -Name "Start_TrackDocs" -Type DWord -Value 0
-
-        # Disable Iris Recommendations (from research)
+        Set-ItemProperty -Path $advancedPath -Name "Start_TrackProgs" -Type DWord -Value 0
         Set-ItemProperty -Path $advancedPath -Name "Start_IrisRecommendations" -Type DWord -Value 0
 
-        Write-Log "Start Menu Recommended section hidden (Note: Full effect on Win11 SE only)" "SUCCESS"
+        Write-Log "Start Menu Recommended section hidden" "SUCCESS"
         return $true
     }
     catch {
         Write-Log "Failed to hide Start Menu Recommended: $_" "ERROR"
+        return $false
+    }
+}
+
+function Set-StartMenuMorePins {
+    if (-not $IsWindows11) {
+        Write-Log "Start Menu pin layout not applicable for Windows 10" "INFO"
+        return $true
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would set Start Menu to show all/more pins" "INFO"
+        return $true
+    }
+
+    try {
+        Update-Status "Setting Start Menu to show more pins..."
+
+        # More Pins layout for old Start menu (22H2-24H2 pre-update)
+        $advancedPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+        Set-ItemProperty -Path $advancedPath -Name "Start_Layout" -Type DWord -Value 1
+
+        # Show All Pins for new Start menu (24H2+/25H2 with new Start)
+        $startPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Start"
+        if (!(Test-Path $startPath)) {
+            New-Item -Path $startPath -Force | Out-Null
+        }
+        Set-ItemProperty -Path $startPath -Name "ShowAllPinsList" -Type DWord -Value 1
+
+        Write-Log "Start Menu set to show all/more pins" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed to set Start Menu pins layout: $_" "ERROR"
+        return $false
+    }
+}
+
+function Hide-StartMenuCategoryView {
+    if (-not $IsWindows11) {
+        Write-Log "Start Menu category view not applicable for Windows 10" "INFO"
+        return $true
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would disable category view in Start Menu All Apps" "INFO"
+        return $true
+    }
+
+    try {
+        Update-Status "Disabling category view in Start Menu..."
+
+        # Policy setting: removes Category option, forces Grid as default (Pro+ only, 24H2+)
+        $explorerPolicyPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\Explorer"
+        if (!(Test-Path $explorerPolicyPath)) {
+            New-Item -Path $explorerPolicyPath -Force | Out-Null
+        }
+        Set-ItemProperty -Path $explorerPolicyPath -Name "HideCategoryView" -Type DWord -Value 1
+
+        Write-Log "Start Menu category view disabled (Grid/List only)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed to disable Start Menu category view: $_" "ERROR"
         return $false
     }
 }
@@ -1187,6 +1263,16 @@ function Set-StartMenuPins {
             $emptyStart2Bytes = [Convert]::FromBase64String($emptyStart2BinBase64)
             [System.IO.File]::WriteAllBytes($startBinPath, $emptyStart2Bytes)
             Write-Log "Replaced Start Menu layout with empty template" "SUCCESS"
+
+            # On 24H2+ (build 26100+), also clear settings.dat to prevent pin restoration
+            if ([int]$OSBuild -ge 26100) {
+                $settingsDatPath = Join-Path $localStatePath "settings.dat"
+                if (Test-Path $settingsDatPath) {
+                    Copy-Item $settingsDatPath "$settingsDatPath.backup" -Force -ErrorAction SilentlyContinue
+                    Remove-Item $settingsDatPath -Force -ErrorAction SilentlyContinue
+                    Write-Log "Cleared settings.dat for 24H2+ pin clearing compatibility" "INFO"
+                }
+            }
         }
         else {
             Write-Log "StartMenuExperienceHost package not found" "WARN"
@@ -1211,7 +1297,7 @@ function Set-StartMenuPins {
         [System.IO.File]::WriteAllBytes($defaultStartBinPath, $emptyStart2Bytes)
         Write-Log "Copied empty start2.bin to default user profile" "SUCCESS"
 
-        Write-Log "Start Menu cleared. Sign out and back in to see empty pinned area." "SUCCESS"
+        Write-Log "Start Menu cleared. Sign out and back in to see changes. On 24H2+ a restart may be needed." "SUCCESS"
         return $true
     }
     catch {
@@ -1477,7 +1563,7 @@ function Update-RepairResultDisplay {
 # ============================================================================
 
 $MainForm = New-Object System.Windows.Forms.Form
-$MainForm.Text = "Windows PC Setup Utility v2.1"
+$MainForm.Text = "Windows PC Setup Utility v2.2"
 $MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
@@ -1772,7 +1858,9 @@ $settingsTooltips = @{
     "SearchIcon" = "Reduces the large search box to a compact icon, saving taskbar space"
     "MultiMonitor" = "Shows the taskbar on all monitors; apps appear on the display where their window is open"
     "CombineWhenFull" = "Shows separate buttons for each window until taskbar runs out of space"
-    "HideRecommended" = "Hides the 'Recommended' section in the Start Menu that shows recent files (Win11 only)"
+    "HideRecommended" = "Hides the Recommended section and disables all recommendation data sources: recent files, most used apps, tips/ads (Win11)"
+    "MorePins" = "Expands the pinned apps area to show all pins at once. Sets 'More Pins' layout on older builds, 'Show All Pins' on new Start Menu (Win11)"
+    "HideCategoryView" = "Removes Category grouping from All Apps, leaving only Grid and List views. Requires Pro+ edition with the new Start Menu (Win11)"
     "DisableBing" = "Prevents web searches when you type in the Start Menu - only shows local results"
     "PowerSettings" = "Optimizes power settings: display off after 10 min, never sleep when plugged in, sleep after 1 hour on battery"
     "Clipboard" = "Enables clipboard history - press Win+V to access previously copied items"
@@ -1780,7 +1868,7 @@ $settingsTooltips = @{
     "ExplorerThisPC" = "Opens File Explorer to 'This PC' view showing drives instead of Quick Access/Home"
     "ShowExtensions" = "Shows file extensions like .txt, .exe, .pdf - helps identify file types and spot malware"
     "CleanQuickAccess" = "Removes all pinned folders from Quick Access except Desktop and Downloads"
-    "StartPins" = "Clears ALL pinned apps from Start Menu for a clean look (requires sign-out)"
+    "StartPins" = "Clears ALL pinned apps from Start Menu for a clean look (requires sign-out; on 24H2+ a restart may be needed)"
 }
 
 # Taskbar section
@@ -1836,6 +1924,32 @@ $ChkHideRecommended.Enabled = $IsWindows11
 $script:MainTooltip.SetToolTip($ChkHideRecommended, $settingsTooltips["HideRecommended"])
 $SettingsPanel.Controls.Add($ChkHideRecommended)
 $script:SettingsCheckboxes += $ChkHideRecommended
+$settingsYPos += $script:UI.ItemSpacing
+
+# Show More Pins / Show All Pins
+$ChkMorePins = New-Object System.Windows.Forms.CheckBox
+$ChkMorePins.Text = "Show all/more pinned apps in Start Menu"
+$ChkMorePins.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkMorePins.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$ChkMorePins.Checked = $IsWindows11
+$ChkMorePins.Tag = "MorePins"
+$ChkMorePins.Enabled = $IsWindows11
+$script:MainTooltip.SetToolTip($ChkMorePins, $settingsTooltips["MorePins"])
+$SettingsPanel.Controls.Add($ChkMorePins)
+$script:SettingsCheckboxes += $ChkMorePins
+$settingsYPos += $script:UI.ItemSpacing
+
+# Disable Category View (Grid/List only)
+$ChkHideCategoryView = New-Object System.Windows.Forms.CheckBox
+$ChkHideCategoryView.Text = "Disable category view in All Apps (Grid/List only)"
+$ChkHideCategoryView.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $settingsYPos)
+$ChkHideCategoryView.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$ChkHideCategoryView.Checked = $IsWindows11
+$ChkHideCategoryView.Tag = "HideCategoryView"
+$ChkHideCategoryView.Enabled = $IsWindows11
+$script:MainTooltip.SetToolTip($ChkHideCategoryView, $settingsTooltips["HideCategoryView"])
+$SettingsPanel.Controls.Add($ChkHideCategoryView)
+$script:SettingsCheckboxes += $ChkHideCategoryView
 $settingsYPos += $script:UI.ItemSpacing
 
 # Disable Bing Search
@@ -1984,6 +2098,8 @@ $BtnApplySettings.Add_Click({
                     "MultiMonitor" { $result = Set-TaskbarMultiMonitor }
                     "CombineWhenFull" { $result = Set-TaskbarCombineWhenFull }
                     "HideRecommended" { $result = Hide-StartMenuRecommended }
+                    "MorePins" { $result = Set-StartMenuMorePins }
+                    "HideCategoryView" { $result = Hide-StartMenuCategoryView }
                     "DisableBing" { $result = Disable-BingSearch }
                     "PowerSettings" { $result = Set-PowerSettings }
                     "Clipboard" { $result = Enable-ClipboardHistory }
@@ -2664,7 +2780,7 @@ $MainForm.Controls.Add($script:StatusLabel)
 
 # Version and help info
 $LblVersion = New-Object System.Windows.Forms.Label
-$LblVersion.Text = "v2.1 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Text = "v2.2 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
 $LblVersion.Location = New-Object System.Drawing.Point(10, 530)
 $LblVersion.Size = New-Object System.Drawing.Size(665, 18)
 $LblVersion.ForeColor = $script:UI.SubtleGray

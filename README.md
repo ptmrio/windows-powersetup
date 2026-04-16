@@ -22,7 +22,8 @@ If you also find yourself:
 
 - **Remove Bloatware** - Uninstall pre-installed apps (Candy Crush, TikTok, McAfee, etc.)
 - **Configure Settings** - Taskbar, Start Menu, Power, Explorer preferences
-- **Install Apps** - Via winget (Chrome, Brave, VS Code, 7-Zip, VLC, etc.)
+- **Install Apps** - Via winget (Chrome, Brave, PDFgear, VS Code, 7-Zip, VLC, etc.)
+- **System Repair** - DISM, SFC, and CHKDSK tools
 - **Dry Run Mode** - Preview all changes before applying
 - **Tooltips** - Hover over any item for detailed explanations
 - **Keyboard Shortcuts** - Alt+R (Remove), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)
@@ -62,8 +63,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 | Taskbar search | Icon only |
 | Taskbar buttons | Combine when full |
 | Multi-monitor taskbar | Show on all displays |
+| Start Menu recommended | Hidden (all data sources disabled) |
+| Start Menu pins | Show all/more pins |
+| Start Menu category view | Disabled (Grid/List only) |
+| Bing search in Start | Disabled |
 | Explorer opens to | This PC |
 | File extensions | Visible |
+| Clipboard history | Enabled (Win+V) |
 | Storage Sense | Downloads 14 days, Recycle Bin 30 days |
 | Power (AC) | Display off 10min, never sleep |
 | Power (Battery) | Sleep after 1 hour |

@@ -11,3 +11,4 @@
 
 # Plan files
 *.md.backup
+.todo/
