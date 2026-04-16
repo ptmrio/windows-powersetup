@@ -1,9 +1,11 @@
 # Windows PowerSetup
 
-![License: MIT](https://img.shields.io/github/license/ptmrio/windows-powersetup)
-![GitHub release](https://img.shields.io/github/v/tag/ptmrio/windows-powersetup?label=version)
-![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue)
-![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
+<p align="center">
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/ptmrio/windows-powersetup" alt="License: MIT"></a>
+    <a href="https://github.com/ptmrio/windows-powersetup/releases"><img src="https://img.shields.io/github/v/tag/ptmrio/windows-powersetup?label=version" alt="Version"></a>
+    <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue" alt="Platform: Windows">
+    <a href="https://learn.microsoft.com/en-us/powershell/"><img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white" alt="PowerShell 5.1+"></a>
+</p>
 
 A PowerShell GUI utility for IT admins to quickly set up and configure new Windows PCs.
 
