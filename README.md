@@ -1,4 +1,10 @@
-# Windows PowerSetup
+<h1 align="center">Windows PowerSetup</h1>
+
+<p align="center">
+    A PowerShell GUI utility for IT admins to quickly set up and configure new Windows PCs.
+    <br>
+    <strong>By <a href="https://spqrk.net">SPQRK Web Solutions</a></strong>
+</p>
 
 <p align="center">
     <a href="LICENSE"><img src="https://img.shields.io/github/license/ptmrio/windows-powersetup" alt="License: MIT"></a>
@@ -6,10 +12,6 @@
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue" alt="Platform: Windows">
     <a href="https://learn.microsoft.com/en-us/powershell/"><img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white" alt="PowerShell 5.1+"></a>
 </p>
-
-A PowerShell GUI utility for IT admins to quickly set up and configure new Windows PCs.
-
-**By [SPQRK Web Solutions](https://spqrk.net)**
 
 ## Why This Exists
 
