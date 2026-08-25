@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows PC Setup Utility - IT Admin tool for cleaning up and configuring new Windows PCs
@@ -7,9 +7,10 @@
     - Remove bloatware (Windows built-in, Lenovo, and other OEM)
     - Configure system settings (Taskbar, Start Menu, Power)
     - Install common applications via winget
+    - Create a standard local user and apply a Defender baseline (Harden tab)
 .NOTES
     Author: IT Admin Utility
-    Version: 2.2
+    Version: 2.3
     Supports: Windows 10 and Windows 11
 #>
 
@@ -47,7 +48,7 @@ $IsWindows11 = [int]$OSBuild -ge 22000
 # ProductName registry value is unreliable on Win11 (often still says "Windows 10")
 $OSName = if ($IsWindows11) { $OSNameRaw -replace 'Windows 10', 'Windows 11' } else { $OSNameRaw }
 
-Write-Host "Windows PC Setup Utility v2.2 Starting..."
+Write-Host "Windows PC Setup Utility v2.3 Starting..."
 Write-Host "OS: $OSName (Build $OSBuild)"
 Write-Host "Windows 11: $IsWindows11"
 Write-Host "Log file: $script:LogPath"
@@ -357,18 +358,19 @@ function New-IntroText {
         [System.Windows.Forms.Panel]$Panel,
         [string]$Text,
         [int]$YPosition,
-        [int]$XPosition = 20
+        [int]$XPosition = 20,
+        [int]$Height = 36
     )
 
     $intro = New-Object System.Windows.Forms.Label
     $intro.Text = $Text
     $intro.Location = New-Object System.Drawing.Point($XPosition, $YPosition)
-    $intro.Size = New-Object System.Drawing.Size(610, 36)
+    $intro.Size = New-Object System.Drawing.Size(610, $Height)
     $intro.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $intro.ForeColor = $script:UI.SubtleGray
     $Panel.Controls.Add($intro)
 
-    return ($YPosition + 40)
+    return ($YPosition + $Height + 4)
 }
 
 function Update-SelectionCount {
@@ -413,11 +415,17 @@ function Show-ConfirmationDialog {
         [string]$Title,
         [int]$SelectedCount,
         [string]$ActionType,
-        [bool]$IsDryRun
+        [bool]$IsDryRun,
+        [string]$Detail = ""
     )
 
     $dryRunNote = if ($IsDryRun) { "`n`n[DRY RUN MODE - No actual changes will be made]" } else { "" }
-    $message = "You are about to $ActionType $SelectedCount item(s).$dryRunNote`n`nDo you want to continue?"
+    if ($Detail) {
+        $message = "$Detail$dryRunNote`n`nDo you want to continue?"
+    }
+    else {
+        $message = "You are about to $ActionType $SelectedCount item(s).$dryRunNote`n`nDo you want to continue?"
+    }
 
     $result = [System.Windows.Forms.MessageBox]::Show(
         $message,
@@ -427,6 +435,423 @@ function Show-ConfirmationDialog {
     )
 
     return ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
+# ============================================================================
+# HARDEN HELPERS
+# ============================================================================
+
+$script:HardenReservedUsernames = @(
+    'Administrator', 'Guest', 'Gast', 'DefaultAccount', 'WDAGUtilityAccount', 'krbtgt'
+)
+
+$script:HardenAsrGuids = @(
+    '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2',
+    'e6db77e5-3df2-4cf1-b95a-636979351e5b',
+    '56a863a9-875e-4185-98a7-b882c64b5ce5',
+    'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',
+    'd3e037e1-3eb8-44c8-a917-57927947596d',
+    'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4'
+)
+
+function Test-HardenUsername {
+    param([string]$Name)
+    $reserved = @(
+        'Administrator', 'Guest', 'Gast', 'DefaultAccount', 'WDAGUtilityAccount', 'krbtgt'
+    )
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return @{ Ok = $false; Reason = 'Username is empty' }
+    }
+    $trimmed = $Name.Trim()
+    if ($trimmed.Length -gt 20) {
+        return @{ Ok = $false; Reason = 'Username longer than 20 characters' }
+    }
+    if ($trimmed.EndsWith('.')) {
+        return @{ Ok = $false; Reason = 'Username cannot end with a period' }
+    }
+    if ($trimmed -match '[/\\\[\]:;|=,+*?<>@"\s]') {
+        return @{ Ok = $false; Reason = 'Username contains illegal characters or spaces' }
+    }
+    foreach ($item in $reserved) {
+        if ($trimmed -ieq $item) {
+            return @{ Ok = $false; Reason = "Username '$trimmed' is a reserved built-in name" }
+        }
+    }
+    return @{ Ok = $true; Reason = '' }
+}
+
+function Test-HardenPasswordPair {
+    param([string]$Password, [string]$Confirm)
+    if ([string]::IsNullOrEmpty($Password)) {
+        return @{ Ok = $false; Reason = 'Password is empty' }
+    }
+    if ($Password.Length -lt 8) {
+        return @{ Ok = $false; Reason = 'Password shorter than 8 characters' }
+    }
+    if ($Password -cne $Confirm) {
+        return @{ Ok = $false; Reason = 'Password and confirmation do not match' }
+    }
+    return @{ Ok = $true; Reason = '' }
+}
+
+function Merge-HardenAsrState {
+    param(
+        $ExistingIds,
+        $ExistingActions,
+        $WantedGuids = $null
+    )
+    if ($null -eq $WantedGuids) {
+        $WantedGuids = @(
+            '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2',
+            'e6db77e5-3df2-4cf1-b95a-636979351e5b',
+            '56a863a9-875e-4185-98a7-b882c64b5ce5',
+            'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550',
+            'd3e037e1-3eb8-44c8-a917-57927947596d',
+            'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4'
+        )
+    }
+    $map = @{}
+    $order = New-Object System.Collections.Generic.List[string]
+    $ids = @()
+    $actions = @()
+    if ($null -ne $ExistingIds) { $ids = @($ExistingIds) }
+    if ($null -ne $ExistingActions) { $actions = @($ExistingActions) }
+    $mismatched = ($ids.Count -ne $actions.Count)
+    $count = [Math]::Min($ids.Count, $actions.Count)
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($null -eq $ids[$i]) { continue }
+        $key = $ids[$i].ToString().ToLower()
+        if (-not $map.ContainsKey($key)) {
+            [void]$order.Add($key)
+        }
+        $map[$key] = [int]$actions[$i]
+    }
+    foreach ($guid in @($WantedGuids)) {
+        $key = $guid.ToString().ToLower()
+        if (-not $map.ContainsKey($key)) {
+            [void]$order.Add($key)
+        }
+        $map[$key] = 1
+    }
+    $outIds = New-Object System.Collections.Generic.List[string]
+    $outActs = New-Object System.Collections.Generic.List[int]
+    foreach ($key in $order) {
+        [void]$outIds.Add($key)
+        [void]$outActs.Add([int]$map[$key])
+    }
+    return @{ Ids = @($outIds.ToArray()); Actions = @($outActs.ToArray()); Mismatched = $mismatched }
+}
+
+function Test-HardenMpMatches {
+    param($Actual, [string]$Name, [int]$Number)
+    if ($null -eq $Actual) { return $false }
+    $s = $Actual.ToString()
+    if ($s -eq $Name) { return $true }
+    if ($s -eq [string]$Number) { return $true }
+    try {
+        return ([int]$Actual -eq $Number)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-HardenLocalGroupName {
+    param([Parameter(Mandatory)][string]$Sid)
+    $group = Get-LocalGroup | Where-Object { $_.SID.Value -eq $Sid }
+    if ($null -eq $group) {
+        throw "Local group with SID $Sid not found"
+    }
+    return $group.Name
+}
+
+function Test-HardenAccountIsStandardUser {
+    param($User)
+    if ($null -eq $User) { return $false }
+    if (-not $User.Enabled) { return $false }
+    if ($User.SID.Value -match '-50[0134]$') { return $false }
+    $userSid = $User.SID.Value
+    $inUsers = @(Get-LocalGroupMember -SID 'S-1-5-32-545' -ErrorAction Stop | Where-Object { $_.SID.Value -eq $userSid })
+    $inAdmins = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop | Where-Object { $_.SID.Value -eq $userSid })
+    return ($inUsers.Count -gt 0 -and $inAdmins.Count -eq 0)
+}
+
+function New-HardenStandardUser {
+    param(
+        [Parameter(Mandatory)][string]$UserName,
+        [Parameter(Mandatory)][string]$Password,
+        [bool]$ChangePasswordAtLogon = $false
+    )
+
+    $check = Test-HardenUsername -Name $UserName
+    if (-not $check.Ok) {
+        Write-Log "Refusing user create: $($check.Reason)" "ERROR"
+        return $false
+    }
+    $name = $UserName.Trim()
+
+    if (-not [Environment]::Is64BitProcess) {
+        Write-Log "LocalAccounts requires 64-bit PowerShell. Relaunch from System32, not SysWOW64." "ERROR"
+        return $false
+    }
+
+    $existing = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+    if ($existing) {
+        if (-not (Test-HardenAccountIsStandardUser -User $existing)) {
+            Write-Log "Existing account '$name' is not an enabled standard Users member (or is an Administrator / built-in). Refusing." "ERROR"
+            return $false
+        }
+        Write-Log "Local user '$name' already exists and is a standard Users member - skipping create" "WARN"
+        if ($ChangePasswordAtLogon) {
+            if ($script:DryRun) {
+                Write-Log "Would set change-password-at-logon on existing user '$name'" "INFO"
+                return $true
+            }
+            $net = Start-Process -FilePath "$env:SystemRoot\System32\net.exe" -ArgumentList @('user', $name, '/logonpasswordchg:yes') -Wait -PassThru -WindowStyle Hidden
+            if ($net.ExitCode -ne 0) {
+                Write-Log "Existing user '$name' is standard, but failed to set change-password-at-logon (net.exe exit $($net.ExitCode))" "ERROR"
+                return $false
+            }
+            Write-Log "Set change-password-at-logon on existing standard user '$name'" "SUCCESS"
+        }
+        return $true
+    }
+
+    if ($script:DryRun) {
+        Write-Log "Would create local user '$name' in Users (SID S-1-5-32-545)" "INFO"
+        return $true
+    }
+
+    try {
+        $secure = ConvertTo-SecureString -String $Password -AsPlainText -Force
+        New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires:$false | Out-Null
+
+        try {
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name -ErrorAction Stop
+        }
+        catch {
+            $probe = Get-LocalUser -Name $name -ErrorAction Stop
+            if (-not (Test-HardenAccountIsStandardUser -User $probe)) {
+                throw
+            }
+        }
+
+        $created = Get-LocalUser -Name $name -ErrorAction Stop
+        if (-not (Test-HardenAccountIsStandardUser -User $created)) {
+            throw "Postcondition failed: '$name' is not an enabled standard Users member"
+        }
+
+        if ($ChangePasswordAtLogon) {
+            $net = Start-Process -FilePath "$env:SystemRoot\System32\net.exe" -ArgumentList @('user', $name, '/logonpasswordchg:yes') -Wait -PassThru -WindowStyle Hidden
+            if ($net.ExitCode -ne 0) {
+                Write-Log "Created '$name' but failed to set change-password-at-logon (net.exe exit $($net.ExitCode))" "ERROR"
+                return $false
+            }
+        }
+
+        Write-Log "Created local standard user '$name' (Users SID S-1-5-32-545)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed to create local user '$name': $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Test-HardenDefenderAvailable {
+    if (-not [Environment]::Is64BitProcess) { return $false }
+    return [bool](Get-Command Set-MpPreference -ErrorAction SilentlyContinue)
+}
+
+function Get-HardenDefenderReady {
+    if (-not (Test-HardenDefenderAvailable)) {
+        return @{ Ok = $false; Reason = 'Set-MpPreference not found (need 64-bit PowerShell / Microsoft Defender)' }
+    }
+    try {
+        $st = Get-MpComputerStatus -ErrorAction Stop
+        if ($st.AntivirusEnabled -eq $false) {
+            return @{ Ok = $false; Reason = 'Defender antivirus is not enabled' }
+        }
+        $mode = ''
+        try { $mode = [string]$st.AMRunningMode } catch { $mode = '' }
+        if ($mode -match 'Passive') {
+            return @{ Ok = $false; Reason = "Defender is in $mode mode" }
+        }
+        return @{ Ok = $true; Reason = '' }
+    }
+    catch {
+        return @{ Ok = $false; Reason = "Get-MpComputerStatus failed: $($_.Exception.Message)" }
+    }
+}
+
+function Set-HardenDefenderCloud {
+    if ($script:DryRun) {
+        Write-Log "Would enable Defender real-time monitoring, MAPS Advanced, CloudBlockLevel High (2)" "INFO"
+        return $true
+    }
+    $ready = Get-HardenDefenderReady
+    if (-not $ready.Ok) {
+        Write-Log $ready.Reason "ERROR"
+        return $false
+    }
+    try {
+        Set-MpPreference -DisableRealtimeMonitoring $false -MAPSReporting Advanced -CloudBlockLevel High -ErrorAction Stop
+        $pref = Get-MpPreference -ErrorAction Stop
+        $st = Get-MpComputerStatus -ErrorAction Stop
+        $okCloud = Test-HardenMpMatches -Actual $pref.CloudBlockLevel -Name 'High' -Number 2
+        $okMaps = Test-HardenMpMatches -Actual $pref.MAPSReporting -Name 'Advanced' -Number 2
+        $rtOff = $true
+        try { $rtOff = [bool]$pref.DisableRealtimeMonitoring } catch { $rtOff = $true }
+        $rtEnabled = $false
+        try { $rtEnabled = [bool]$st.RealTimeProtectionEnabled } catch { $rtEnabled = $false }
+        if (-not $okCloud -or -not $okMaps -or $rtOff -or -not $rtEnabled) {
+            $tamper = ''
+            try {
+                if ($st.IsTamperProtected) { $tamper = ' Tamper Protection is on.' }
+            }
+            catch { }
+            $stickMsg = "Defender cloud/realtime did not stick (CloudBlockLevel={0}, MAPS={1}, DisableRealtimeMonitoring={2}, RealTimeProtectionEnabled={3}).{4}" -f $pref.CloudBlockLevel, $pref.MAPSReporting, $rtOff, $rtEnabled, $tamper
+            Write-Log $stickMsg "ERROR"
+            return $false
+        }
+        Write-Log "Defender real-time on, cloud protection High" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed Defender cloud/realtime: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenPua {
+    if ($script:DryRun) {
+        Write-Log "Would set PUAProtection Enabled (1)" "INFO"
+        return $true
+    }
+    $ready = Get-HardenDefenderReady
+    if (-not $ready.Ok) {
+        Write-Log $ready.Reason "ERROR"
+        return $false
+    }
+    try {
+        Set-MpPreference -PUAProtection Enabled -ErrorAction Stop
+        $pref = Get-MpPreference -ErrorAction Stop
+        if (-not (Test-HardenMpMatches -Actual $pref.PUAProtection -Name 'Enabled' -Number 1)) {
+            Write-Log "PUA protection did not stick (effective=$($pref.PUAProtection))" "ERROR"
+            return $false
+        }
+        Write-Log "PUA protection enabled" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed PUA protection: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenNetworkProtection {
+    if ($script:DryRun) {
+        Write-Log "Would set EnableNetworkProtection Enabled (1)" "INFO"
+        return $true
+    }
+    $ready = Get-HardenDefenderReady
+    if (-not $ready.Ok) {
+        Write-Log $ready.Reason "ERROR"
+        return $false
+    }
+    try {
+        Set-MpPreference -EnableNetworkProtection Enabled -ErrorAction Stop
+        $pref = Get-MpPreference -ErrorAction Stop
+        if (-not (Test-HardenMpMatches -Actual $pref.EnableNetworkProtection -Name 'Enabled' -Number 1)) {
+            Write-Log "Network Protection did not stick (effective=$($pref.EnableNetworkProtection))" "ERROR"
+            return $false
+        }
+        Write-Log "Network Protection enabled" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed Network Protection: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenAsrBaseline {
+    if ($script:DryRun) {
+        Write-Log "Would merge six ASR rules to Block (Enabled): $($script:HardenAsrGuids -join ', ')" "INFO"
+        return $true
+    }
+    $ready = Get-HardenDefenderReady
+    if (-not $ready.Ok) {
+        Write-Log $ready.Reason "ERROR"
+        return $false
+    }
+    try {
+        $pref = Get-MpPreference -ErrorAction Stop
+        $merged = Merge-HardenAsrState -ExistingIds $pref.AttackSurfaceReductionRules_Ids -ExistingActions $pref.AttackSurfaceReductionRules_Actions
+        if ($merged.Mismatched) {
+            Write-Log "Refusing ASR merge: existing rule ID/action lists have different lengths. Not replacing ASR state." "ERROR"
+            return $false
+        }
+        $wantedLower = @($script:HardenAsrGuids | ForEach-Object { $_.ToLower() })
+        $existingLower = @()
+        if ($null -ne $pref.AttackSurfaceReductionRules_Ids) {
+            $existingLower = @($pref.AttackSurfaceReductionRules_Ids | ForEach-Object { if ($null -ne $_) { $_.ToString().ToLower() } })
+        }
+        $extras = @($existingLower | Where-Object { $_ -and ($wantedLower -notcontains $_) })
+        Set-MpPreference -AttackSurfaceReductionRules_Ids $merged.Ids -AttackSurfaceReductionRules_Actions $merged.Actions -ErrorAction Stop
+        $after = Get-MpPreference -ErrorAction Stop
+        $afterIds = @()
+        $afterActs = @()
+        if ($null -ne $after.AttackSurfaceReductionRules_Ids) { $afterIds = @($after.AttackSurfaceReductionRules_Ids) }
+        if ($null -ne $after.AttackSurfaceReductionRules_Actions) { $afterActs = @($after.AttackSurfaceReductionRules_Actions) }
+        $lower = @($afterIds | ForEach-Object { if ($null -ne $_) { $_.ToString().ToLower() } })
+        foreach ($guid in $script:HardenAsrGuids) {
+            $idx = [array]::IndexOf($lower, $guid.ToLower())
+            if ($idx -lt 0 -or $idx -ge $afterActs.Count -or [int]$afterActs[$idx] -ne 1) {
+                Write-Log "ASR rule $guid did not stick as Block after apply" "ERROR"
+                return $false
+            }
+        }
+        foreach ($extra in $extras) {
+            if ($lower -notcontains $extra) {
+                Write-Log "ASR merge dropped existing rule $extra" "ERROR"
+                return $false
+            }
+        }
+        Write-Log "ASR baseline merged (six rules Block); existing other rules kept" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed ASR baseline: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenSmartScreenWarn {
+    if ($script:DryRun) {
+        Write-Log "Would set HKLM Policies\Microsoft\Windows\System EnableSmartScreen=1 ShellSmartScreenLevel=Warn" "INFO"
+        return $true
+    }
+    try {
+        $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force | Out-Null
+        }
+        Set-ItemProperty -Path $key -Name 'EnableSmartScreen' -Type DWord -Value 1 -ErrorAction Stop
+        Set-ItemProperty -Path $key -Name 'ShellSmartScreenLevel' -Type String -Value 'Warn' -ErrorAction Stop
+        $read = Get-ItemProperty -Path $key -ErrorAction Stop
+        if ([int]$read.EnableSmartScreen -ne 1 -or [string]$read.ShellSmartScreenLevel -ne 'Warn') {
+            $ssMsg = "SmartScreen policy did not stick (EnableSmartScreen={0}, ShellSmartScreenLevel={1})" -f $read.EnableSmartScreen, $read.ShellSmartScreenLevel
+            Write-Log $ssMsg "ERROR"
+            return $false
+        }
+        Write-Log "SmartScreen Warn (machine policy) applied" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed SmartScreen policy: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
 }
 
 # ============================================================================
@@ -1563,7 +1988,7 @@ function Update-RepairResultDisplay {
 # ============================================================================
 
 $MainForm = New-Object System.Windows.Forms.Form
-$MainForm.Text = "Windows PC Setup Utility v2.2"
+$MainForm.Text = "Windows PC Setup Utility v2.3"
 $MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
@@ -2335,7 +2760,272 @@ $InstallAppsPanel.Controls.Add($BtnInstallApps)
 $TabInstallApps.Controls.Add($InstallAppsPanel)
 
 # ============================================================================
-# TAB 4: SYSTEM REPAIR
+# TAB 4: HARDEN
+# ============================================================================
+
+$TabHarden = New-Object System.Windows.Forms.TabPage
+$TabHarden.Text = "Harden"
+$TabHarden.Padding = New-Object System.Windows.Forms.Padding(10)
+
+$HardenPanel = New-Object System.Windows.Forms.Panel
+$HardenPanel.Dock = "Fill"
+$HardenPanel.AutoScroll = $true
+
+$hardenY = New-IntroText -Panel $HardenPanel -Height 52 -YPosition 8 -Text "Install apps on this admin account first. Then create the daily standard user and apply machine-wide Defender settings. Sign in as that user to set up their desktop. Close the elevated PowerShell window before handover. PDF reader is on Install Apps. Chrome Workspace cloud-over-local is set in Google Admin, not here."
+
+$hardenY = New-SectionHeader -Panel $HardenPanel -Text "Standard user" -YPosition $hardenY
+
+$script:ChkHardenCreateUser = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenCreateUser.Text = "Create this user"
+$script:ChkHardenCreateUser.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenCreateUser.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenCreateUser.Checked = $true
+$script:MainTooltip.SetToolTip($script:ChkHardenCreateUser, "Creates a local Users-group account. Never an administrator. Off = apply Defender baseline only.")
+$HardenPanel.Controls.Add($script:ChkHardenCreateUser)
+$hardenY += $script:UI.ItemSpacing
+
+$LblHardenUser = New-Object System.Windows.Forms.Label
+$LblHardenUser.Text = "Username"
+$LblHardenUser.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$LblHardenUser.Size = New-Object System.Drawing.Size(120, 20)
+$HardenPanel.Controls.Add($LblHardenUser)
+$script:TxtHardenUser = New-Object System.Windows.Forms.TextBox
+$script:TxtHardenUser.Location = New-Object System.Drawing.Point(160, ($hardenY - 2))
+$script:TxtHardenUser.Size = New-Object System.Drawing.Size(280, 22)
+$script:TxtHardenUser.Text = ""
+$script:MainTooltip.SetToolTip($script:TxtHardenUser, "Local account name you choose. No default. Max 20 characters, no spaces.")
+$HardenPanel.Controls.Add($script:TxtHardenUser)
+$hardenY += $script:UI.ItemSpacing
+
+$LblHardenPw = New-Object System.Windows.Forms.Label
+$LblHardenPw.Text = "Password"
+$LblHardenPw.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$LblHardenPw.Size = New-Object System.Drawing.Size(120, 20)
+$HardenPanel.Controls.Add($LblHardenPw)
+$script:TxtHardenPassword = New-Object System.Windows.Forms.TextBox
+$script:TxtHardenPassword.Location = New-Object System.Drawing.Point(160, ($hardenY - 2))
+$script:TxtHardenPassword.Size = New-Object System.Drawing.Size(280, 22)
+$script:TxtHardenPassword.UseSystemPasswordChar = $true
+$HardenPanel.Controls.Add($script:TxtHardenPassword)
+$hardenY += $script:UI.ItemSpacing
+
+$LblHardenPw2 = New-Object System.Windows.Forms.Label
+$LblHardenPw2.Text = "Confirm password"
+$LblHardenPw2.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$LblHardenPw2.Size = New-Object System.Drawing.Size(120, 20)
+$HardenPanel.Controls.Add($LblHardenPw2)
+$script:TxtHardenPasswordConfirm = New-Object System.Windows.Forms.TextBox
+$script:TxtHardenPasswordConfirm.Location = New-Object System.Drawing.Point(160, ($hardenY - 2))
+$script:TxtHardenPasswordConfirm.Size = New-Object System.Drawing.Size(280, 22)
+$script:TxtHardenPasswordConfirm.UseSystemPasswordChar = $true
+$HardenPanel.Controls.Add($script:TxtHardenPasswordConfirm)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenMustChangePassword = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenMustChangePassword.Text = "User must change password at next logon"
+$script:ChkHardenMustChangePassword.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenMustChangePassword.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenMustChangePassword.Checked = $false
+$script:MainTooltip.SetToolTip($script:ChkHardenMustChangePassword, "Leave off so you can sign in as this user and set up their desktop.")
+$HardenPanel.Controls.Add($script:ChkHardenMustChangePassword)
+$hardenY += $script:UI.SectionSpacing
+
+$hardenY = New-SectionHeader -Panel $HardenPanel -Text "Microsoft baseline" -YPosition $hardenY
+
+$script:ChkHardenDefenderCloud = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenDefenderCloud.Text = "Defender real-time + cloud protection (High)"
+$script:ChkHardenDefenderCloud.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenDefenderCloud.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenDefenderCloud.Checked = $true
+$HardenPanel.Controls.Add($script:ChkHardenDefenderCloud)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenPua = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenPua.Text = "Potentially unwanted app blocking (PUA)"
+$script:ChkHardenPua.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenPua.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenPua.Checked = $true
+$HardenPanel.Controls.Add($script:ChkHardenPua)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenSmartScreen = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenSmartScreen.Text = "SmartScreen (Warn)"
+$script:ChkHardenSmartScreen.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenSmartScreen.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenSmartScreen.Checked = $true
+$HardenPanel.Controls.Add($script:ChkHardenSmartScreen)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenNetwork = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenNetwork.Text = "Network Protection"
+$script:ChkHardenNetwork.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenNetwork.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenNetwork.Checked = $true
+$HardenPanel.Controls.Add($script:ChkHardenNetwork)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenAsr = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenAsr.Text = "Attack surface reduction (six conservative rules)"
+$script:ChkHardenAsr.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenAsr.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenAsr.Checked = $true
+$script:MainTooltip.SetToolTip($script:ChkHardenAsr, "LSASS credential steal, WMI persistence, vulnerable drivers, email/webmail executables, script-launched downloads, unsigned USB executables. Does not block Office or Acrobat child processes.")
+$HardenPanel.Controls.Add($script:ChkHardenAsr)
+$hardenY += 40
+
+$script:BtnApplyHarden = New-Object System.Windows.Forms.Button
+$script:BtnApplyHarden.Text = "Apply &Harden"
+$script:BtnApplyHarden.Location = New-Object System.Drawing.Point(480, $hardenY)
+$script:BtnApplyHarden.Size = New-Object System.Drawing.Size(150, $script:UI.ButtonHeight)
+$script:BtnApplyHarden.BackColor = $script:UI.AccentColor
+$script:BtnApplyHarden.ForeColor = [System.Drawing.Color]::White
+$script:BtnApplyHarden.FlatStyle = "Flat"
+Add-ButtonHoverEffect -Button $script:BtnApplyHarden
+$script:MainTooltip.SetToolTip($script:BtnApplyHarden, "Create the user if selected, then apply checked Defender settings (Alt+H)")
+
+$script:BtnApplyHarden.Add_Click({
+    $disabledButton = $false
+    try {
+        $script:DryRun = $script:ChkDryRun.Checked
+
+        $createUser = $script:ChkHardenCreateUser.Checked
+        $userName = $script:TxtHardenUser.Text
+        $password = $script:TxtHardenPassword.Text
+        $confirm = $script:TxtHardenPasswordConfirm.Text
+
+        if ($createUser) {
+            $u = Test-HardenUsername -Name $userName
+            if (-not $u.Ok) {
+                [System.Windows.Forms.MessageBox]::Show($u.Reason, "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+            $p = Test-HardenPasswordPair -Password $password -Confirm $confirm
+            if (-not $p.Ok) {
+                [System.Windows.Forms.MessageBox]::Show($p.Reason, "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                return
+            }
+        }
+
+        $lines = New-Object System.Collections.Generic.List[string]
+        if ($createUser) {
+            [void]$lines.Add("Create standard user: $($userName.Trim())")
+            if ($script:ChkHardenMustChangePassword.Checked) {
+                [void]$lines.Add("Must change password at next logon: yes")
+            }
+        }
+        else {
+            [void]$lines.Add("Skip user create")
+        }
+        if ($script:ChkHardenDefenderCloud.Checked) { [void]$lines.Add("Defender real-time + cloud High") }
+        if ($script:ChkHardenPua.Checked) { [void]$lines.Add("PUA") }
+        if ($script:ChkHardenSmartScreen.Checked) { [void]$lines.Add("SmartScreen Warn") }
+        if ($script:ChkHardenNetwork.Checked) { [void]$lines.Add("Network Protection") }
+        if ($script:ChkHardenAsr.Checked) { [void]$lines.Add("ASR six-rule baseline") }
+
+        $anyBaseline = $script:ChkHardenDefenderCloud.Checked -or $script:ChkHardenPua.Checked -or $script:ChkHardenSmartScreen.Checked -or $script:ChkHardenNetwork.Checked -or $script:ChkHardenAsr.Checked
+        if (-not $createUser -and -not $anyBaseline) {
+            [System.Windows.Forms.MessageBox]::Show("Nothing selected to apply.", "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+
+        $detail = "You are about to apply:`n`n" + ($lines -join "`n")
+        $selectedCount = $lines.Count
+        if (-not (Show-ConfirmationDialog -Title "Confirm Harden" -SelectedCount $selectedCount -ActionType "apply" -IsDryRun $script:DryRun -Detail $detail)) {
+            return
+        }
+
+        Set-ButtonDisabled -Button $script:BtnApplyHarden -WorkingText "Applying..."
+        $disabledButton = $true
+        $successCount = 0
+        $failCount = 0
+
+        if ($script:DryRun) {
+            Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
+        }
+
+        $total = 0
+        if ($createUser) { $total++ }
+        if ($script:ChkHardenDefenderCloud.Checked) { $total++ }
+        if ($script:ChkHardenPua.Checked) { $total++ }
+        if ($script:ChkHardenSmartScreen.Checked) { $total++ }
+        if ($script:ChkHardenNetwork.Checked) { $total++ }
+        if ($script:ChkHardenAsr.Checked) { $total++ }
+        if ($total -lt 1) { $total = 1 }
+        $current = 0
+
+        if ($createUser) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Local user"
+            if (-not (New-HardenStandardUser -UserName $userName.Trim() -Password $password -ChangePasswordAtLogon:$script:ChkHardenMustChangePassword.Checked)) {
+                Hide-Progress
+                Update-Status "Harden stopped: user create failed. Baseline not applied."
+                [System.Windows.Forms.MessageBox]::Show(
+                    "User create failed. Defender baseline was not applied. Fix the name/password and retry.`n`nLog: $script:LogPath",
+                    "Harden",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Error
+                )
+                return
+            }
+            $successCount++
+        }
+
+        if ($script:ChkHardenDefenderCloud.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Defender cloud"
+            if (Set-HardenDefenderCloud) { $successCount++ } else { $failCount++ }
+        }
+        if ($script:ChkHardenPua.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "PUA"
+            if (Set-HardenPua) { $successCount++ } else { $failCount++ }
+        }
+        if ($script:ChkHardenSmartScreen.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "SmartScreen"
+            if (Set-HardenSmartScreenWarn) { $successCount++ } else { $failCount++ }
+        }
+        if ($script:ChkHardenNetwork.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Network Protection"
+            if (Set-HardenNetworkProtection) { $successCount++ } else { $failCount++ }
+        }
+        if ($script:ChkHardenAsr.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "ASR"
+            if (Set-HardenAsrBaseline) { $successCount++ } else { $failCount++ }
+        }
+
+        Hide-Progress
+        $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        Update-Status "${dryRunMsg}Harden complete. Success: $successCount, Failed: $failCount"
+        [System.Windows.Forms.MessageBox]::Show(
+            "${dryRunMsg}Harden complete.`n`nSuccessful: $successCount`nFailed: $failCount`n`nClose the elevated PowerShell window before handover.`n`nLog: $script:LogPath",
+            "Harden",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+    catch {
+        Write-Log "Error during Harden: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        Hide-Progress
+        if ($disabledButton) {
+            Set-ButtonEnabled -Button $script:BtnApplyHarden
+        }
+        $script:DryRun = $false
+        $script:TxtHardenPassword.Text = ""
+        $script:TxtHardenPasswordConfirm.Text = ""
+    }
+})
+$HardenPanel.Controls.Add($script:BtnApplyHarden)
+
+$TabHarden.Controls.Add($HardenPanel)
+
+# ============================================================================
+# TAB 5: SYSTEM REPAIR
 # ============================================================================
 
 $TabRepair = New-Object System.Windows.Forms.TabPage
@@ -2712,7 +3402,7 @@ $TabRepair.Controls.Add($RepairPanel)
 # ADD TABS TO TAB CONTROL
 # ============================================================================
 
-$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps, $TabRepair))
+$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps, $TabHarden, $TabRepair))
 $MainForm.Controls.Add($TabControl)
 
 # ============================================================================
@@ -2780,7 +3470,7 @@ $MainForm.Controls.Add($script:StatusLabel)
 
 # Version and help info
 $LblVersion = New-Object System.Windows.Forms.Label
-$LblVersion.Text = "v2.2 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Text = "v2.3 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+I (Install), Alt+Y (Dry Run)"
 $LblVersion.Location = New-Object System.Drawing.Point(10, 530)
 $LblVersion.Size = New-Object System.Drawing.Size(665, 18)
 $LblVersion.ForeColor = $script:UI.SubtleGray

@@ -6,9 +6,11 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [r
 if ($errors.Count -eq 0) {
     Write-Host "SYNTAX CHECK PASSED" -ForegroundColor Green
     Write-Host "Script lines: approximately $($ast.Extent.EndLineNumber)"
+    exit 0
 } else {
     Write-Host "SYNTAX ERRORS FOUND:" -ForegroundColor Red
     foreach ($e in $errors) {
         Write-Host "  Line $($e.Extent.StartLineNumber): $($e.Message)" -ForegroundColor Red
     }
+    exit 1
 }
