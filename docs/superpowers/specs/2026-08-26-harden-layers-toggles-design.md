@@ -9,7 +9,7 @@ ASCII only, on purpose. See the encoding trap in `docs/known.md`.
 
 ## Problem this delta addresses
 
-v2.3 shipped two things: create a standard local user, apply a Defender/SmartScreen/ASR baseline. In the field the standard-user half is usually skipped. The Austrian 1-5 PC shops this tool targets want one account, and that account is the admin the technician already made. So the part of the box that actually stopped the fake-PDF bundler class (`docs/incidents/2026-pdf-bundler-chrome-hijack.md`) is the part that gets turned off.
+v2.3 shipped two things: create a standard local user, apply a Defender/SmartScreen/ASR baseline. In the field the standard-user half is usually skipped. The Austrian 1-5 PC shops this tool targets want one account, and that account is the admin the technician already made. So the part of the box that actually stopped the fake-PDF bundler class is the part that gets turned off.
 
 v2.4 does not fight that. It keeps standard-user creation, flips its checkbox default to off, and adds friction that works on a single-admin box:
 

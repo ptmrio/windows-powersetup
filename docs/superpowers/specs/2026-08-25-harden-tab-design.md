@@ -8,7 +8,7 @@ Product: Windows PowerSetup (`Windows-PC-Setup.ps1`, single-file WinForms)
 
 Fake “PDF converter/reader” setups (`PDFConvertSetup.exe`, `PDFReaderSetup.exe`) are bundlers. They install junk browsers plus an updater that writes **Chrome machine policies**. Yahoo is locked, Google disappears from the list, new tabs hop through throwaway domains. It is per-PC. Shared drives are usually clean. Recovery is a **wipe**, not a Chrome reset. Workspace “Managed by …” can still be genuine; local Chrome policy still wins unless cloud is set to override.
 
-Incident notes: `docs/incidents/2026-pdf-bundler-chrome-hijack.md`, trap in `docs/known.md`.
+Trap: `docs/known.md`.
 
 Audience: one-person IT, mostly Austrian shops with 1–5 PCs, local accounts (not Entra). Another technician must be able to understand and undo the box.
 
@@ -30,7 +30,7 @@ Then the technician signs in as that user to set up the desktop, confirming UAC 
 - Writing Chrome policies (HKLM or HKCU) from this script.
 - Treating Google Admin “cloud over local” as automatic: platform machine policy still wins by default; `CloudPolicyOverridesPlatformPolicy` is machine-scope and must be verified in `chrome://policy`.
 - Smart App Control, BitLocker, Controlled Folder Access, Office/Acrobat “block child processes” ASR, WDAC/AppLocker.
-- Demoting the current admin, auto-logon, Microsoft/Entra accounts, default usernames (`admin`, `praxis`, …).
+- Demoting the current admin, auto-logon, Microsoft/Entra accounts, default usernames (`admin`, `user`, …).
 - Applying HKCU “user environment” tweaks while running as admin (they would stick to the wrong account).
 
 ## Operator workflow

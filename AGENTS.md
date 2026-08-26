@@ -20,7 +20,7 @@ That parse is the merge bar (`exit 1` on parse errors). Harden helpers: `test-ha
 - Registry: HKCU preference + HKCU policy fallback. No HKLM Start policy. No `IsEducationEnvironment`. Harden may call Defender cmdlets and write only: `HKLM:\SOFTWARE\Policies\Microsoft\Windows\System` `EnableSmartScreen` + `ShellSmartScreenLevel=Warn`; `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System` `InactivityTimeoutSecs`; `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen` `ConfigureAppInstallControlEnabled` + `ConfigureAppInstallControl` (Unlock may delete those two Store-only values only); `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` `VerifiedAndReputablePolicyState` (SAC On/Off, Win11). Never write Explorer `AicEnabled`. No Chrome policies.
 - Local Users/Administrators: resolve by SID (`S-1-5-32-545` / `S-1-5-32-544`), never English names.
 - DISM before SFC (see `CTO-SAFETY-REPORT.md`). Repair tab already exists; do not reorder from WinUtil.
-- Traps and exact commands live in `docs/known.md`. Append what cost time; delete what stops being true.
+- Traps and exact commands live in `docs/known.md`. Append what cost time; delete what stops being true. No customer names, hostnames, or incident write-ups. Do not commit `.cursor/`, `.claude/settings.json`, `research-start-menu-2026.md`, or `docs/incidents/`.
 
 ## Tabs in the GUI
 

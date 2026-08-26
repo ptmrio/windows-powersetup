@@ -8,9 +8,15 @@
 # IDE
 .vscode/
 .idea/
+.cursor/
 
-# Local agent overrides (committed: settings.json, CLAUDE.md)
+# Local agent overrides (committed: CLAUDE.md)
+.claude/settings.json
 .claude/settings.local.json
+
+# Local research dumps and customer incident notes
+research-start-menu-2026.md
+docs/incidents/
 
 # Plan files
 *.md.backup
