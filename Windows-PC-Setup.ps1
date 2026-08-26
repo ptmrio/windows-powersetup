@@ -7,10 +7,10 @@
     - Remove bloatware (Windows built-in, Lenovo, and other OEM)
     - Configure system settings (Taskbar, Start Menu, Power)
     - Install common applications via winget
-    - Create a standard local user and apply a Defender baseline (Harden tab)
+    - Create an optional standard local user and apply a Defender baseline, 10-minute lock, Store-only policy, and Smart App Control (Harden tab)
 .NOTES
     Author: IT Admin Utility
-    Version: 2.3
+    Version: 2.4
     Supports: Windows 10 and Windows 11
 #>
 
@@ -48,7 +48,7 @@ $IsWindows11 = [int]$OSBuild -ge 22000
 # ProductName registry value is unreliable on Win11 (often still says "Windows 10")
 $OSName = if ($IsWindows11) { $OSNameRaw -replace 'Windows 10', 'Windows 11' } else { $OSNameRaw }
 
-Write-Host "Windows PC Setup Utility v2.3 Starting..."
+Write-Host "Windows PC Setup Utility v2.4 Starting..."
 Write-Host "OS: $OSName (Build $OSBuild)"
 Write-Host "Windows 11: $IsWindows11"
 Write-Host "Log file: $script:LogPath"
@@ -310,7 +310,11 @@ function Set-ButtonDisabled {
         [System.Windows.Forms.Button]$Button,
         [string]$WorkingText = "Working..."
     )
-    $Button.Tag = @{ OriginalText = $Button.Text; OriginalBg = $Button.BackColor }
+    $Button.Tag = @{
+        OriginalText = $Button.Text
+        OriginalBg   = $Button.BackColor
+        OriginalFg   = $Button.ForeColor
+    }
     $Button.Text = $WorkingText
     $Button.BackColor = $script:UI.DisabledBg
     $Button.ForeColor = $script:UI.DisabledFg
@@ -322,8 +326,18 @@ function Set-ButtonEnabled {
     if ($Button.Tag -and $Button.Tag.OriginalText) {
         $Button.Text = $Button.Tag.OriginalText
     }
-    $Button.BackColor = $script:UI.AccentColor
-    $Button.ForeColor = [System.Drawing.Color]::White
+    if ($Button.Tag -and $Button.Tag.OriginalBg) {
+        $Button.BackColor = $Button.Tag.OriginalBg
+    }
+    else {
+        $Button.BackColor = $script:UI.AccentColor
+    }
+    if ($Button.Tag -and $Button.Tag.OriginalFg) {
+        $Button.ForeColor = $Button.Tag.OriginalFg
+    }
+    else {
+        $Button.ForeColor = [System.Drawing.Color]::White
+    }
     $Button.Enabled = $true
 }
 
@@ -850,6 +864,227 @@ function Set-HardenSmartScreenWarn {
     }
     catch {
         Write-Log "Failed SmartScreen policy: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Test-HardenIsHomeEdition {
+    param([string]$EditionId)
+    if ([string]::IsNullOrWhiteSpace($EditionId)) { return $false }
+    $id = $EditionId.Trim()
+    foreach ($skuName in @('Core', 'CoreN', 'CoreSingleLanguage', 'CoreCountrySpecific', 'Home')) {
+        if ($id -ieq $skuName) { return $true }
+    }
+    return $false
+}
+
+function Test-HardenSacUiVersionAllowsOn {
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return $false }
+    try {
+        $got = [version]$Version.Trim()
+        $need = [version]'1000.29554.0.0'
+        return ($got -ge $need)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Convert-HardenSacState {
+    param($RegistryDword)
+    if ($null -eq $RegistryDword) { return 'Off' }
+    try {
+        switch ([int]$RegistryDword) {
+            1 { return 'On' }
+            2 { return 'Eval' }
+            default { return 'Off' }
+        }
+    }
+    catch {
+        return 'Off'
+    }
+}
+
+function Get-HardenSacState {
+    $build = 0
+    try {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        $build = [int]$cv.CurrentBuild
+    }
+    catch { }
+    if ($build -lt 22000) {
+        return @{ State = 'Unsupported'; Reason = 'Windows 11 only'; Reversible = $false }
+    }
+    $reg = $null
+    try {
+        $pol = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -ErrorAction Stop
+        if ($null -ne $pol.PSObject.Properties['VerifiedAndReputablePolicyState']) {
+            $reg = $pol.VerifiedAndReputablePolicyState
+        }
+    }
+    catch { }
+    $state = Convert-HardenSacState $reg
+    $uiVer = ''
+    try {
+        $pkg = Get-AppxPackage -Name 'Microsoft.SecHealthUI' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pkg) { $uiVer = [string]$pkg.Version }
+    }
+    catch { }
+    $reversible = Test-HardenSacUiVersionAllowsOn $uiVer
+    $reason = ''
+    if ($state -eq 'On') {
+        $reason = 'already On'
+    }
+    elseif (-not $reversible) {
+        $reason = 'Windows Security app too old or missing for SAC On'
+    }
+    return @{ State = $state; Reason = $reason; Reversible = $reversible }
+}
+
+function Set-HardenInactivityLock {
+    if ($script:DryRun) {
+        Write-Log "Would set InactivityTimeoutSecs=600 (10 min machine lock)" "INFO"
+        return $true
+    }
+    try {
+        $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force | Out-Null
+        }
+        Set-ItemProperty -Path $key -Name 'InactivityTimeoutSecs' -Type DWord -Value 600 -ErrorAction Stop
+        $read = Get-ItemProperty -Path $key -ErrorAction Stop
+        if ([int]$read.InactivityTimeoutSecs -ne 600) {
+            Write-Log "InactivityTimeoutSecs did not stick (effective=$($read.InactivityTimeoutSecs))" "ERROR"
+            return $false
+        }
+        Write-Log "Machine inactivity lock 600 seconds (10 min)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed inactivity lock: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenStoreOnly {
+    if ($script:DryRun) {
+        Write-Log "Would set Store-only policy ConfigureAppInstallControl=StoreOnly" "INFO"
+        return $true
+    }
+    try {
+        $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen'
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force | Out-Null
+        }
+        Set-ItemProperty -Path $key -Name 'ConfigureAppInstallControlEnabled' -Type DWord -Value 1 -ErrorAction Stop
+        Set-ItemProperty -Path $key -Name 'ConfigureAppInstallControl' -Type String -Value 'StoreOnly' -ErrorAction Stop
+        $read = Get-ItemProperty -Path $key -ErrorAction Stop
+        if ([int]$read.ConfigureAppInstallControlEnabled -ne 1 -or [string]$read.ConfigureAppInstallControl -ne 'StoreOnly') {
+            Write-Log "Store-only policy did not stick" "ERROR"
+            return $false
+        }
+        $edition = ''
+        try {
+            $edition = [string](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop).EditionID
+        }
+        catch { }
+        if (Test-HardenIsHomeEdition $edition) {
+            Write-Log "Store-only policy written but edition $edition is Home; enforcement not guaranteed" "ERROR"
+            return $false
+        }
+        Write-Log "Store-only app install policy applied" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed Store-only policy: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Remove-HardenStoreOnly {
+    if ($script:DryRun) {
+        Write-Log "Would delete HKLM Policies Windows Defender SmartScreen ConfigureAppInstallControlEnabled, ConfigureAppInstallControl" "INFO"
+        return $true
+    }
+    try {
+        $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen'
+        if (Test-Path $key) {
+            Remove-ItemProperty -Path $key -Name 'ConfigureAppInstallControlEnabled' -ErrorAction SilentlyContinue
+            Remove-ItemProperty -Path $key -Name 'ConfigureAppInstallControl' -ErrorAction SilentlyContinue
+        }
+        Write-Log "Store-only policy removed (or was absent)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed removing Store-only policy: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenSmartAppControlOn {
+    if ($script:DryRun) {
+        Write-Log "Would set VerifiedAndReputablePolicyState=1 (Smart App Control On)" "INFO"
+        return $true
+    }
+    $st = Get-HardenSacState
+    if ($st.State -eq 'Unsupported') {
+        Write-Log $st.Reason "ERROR"
+        return $false
+    }
+    if ($st.State -eq 'On') {
+        Write-Log "Smart App Control already On" "SUCCESS"
+        return $true
+    }
+    $mayWrite = ($st.State -eq 'Eval') -or ($st.State -eq 'Off' -and $st.Reversible)
+    if (-not $mayWrite) {
+        Write-Log "Refusing SAC On: $($st.Reason)" "ERROR"
+        return $false
+    }
+    try {
+        $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+        Set-ItemProperty -Path $key -Name 'VerifiedAndReputablePolicyState' -Type DWord -Value 1 -ErrorAction Stop
+        $read = Get-ItemProperty -Path $key -ErrorAction Stop
+        if ([int]$read.VerifiedAndReputablePolicyState -ne 1) {
+            Write-Log "SAC On registry write did not stick" "ERROR"
+            return $false
+        }
+        Write-Log "Smart App Control set On (reboot may be required before enforcement)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed SAC On: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Set-HardenSmartAppControlOff {
+    if ($script:DryRun) {
+        Write-Log "Would set VerifiedAndReputablePolicyState=0 (Smart App Control Off)" "INFO"
+        return $true
+    }
+    $st = Get-HardenSacState
+    if ($st.State -eq 'Unsupported') {
+        Write-Log "Smart App Control not applicable (not Windows 11)" "SUCCESS"
+        return $true
+    }
+    if ($st.State -eq 'Off') {
+        Write-Log "Smart App Control already Off" "SUCCESS"
+        return $true
+    }
+    try {
+        $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+        Set-ItemProperty -Path $key -Name 'VerifiedAndReputablePolicyState' -Type DWord -Value 0 -ErrorAction Stop
+        $read = Get-ItemProperty -Path $key -ErrorAction Stop
+        if ([int]$read.VerifiedAndReputablePolicyState -ne 0) {
+            Write-Log "SAC Off registry write did not stick" "ERROR"
+            return $false
+        }
+        Write-Log "Smart App Control set Off (reboot may be required)" "SUCCESS"
+        return $true
+    }
+    catch {
+        Write-Log "Failed SAC Off: $($_.Exception.Message)" "ERROR"
         return $false
     }
 }
@@ -1988,7 +2223,7 @@ function Update-RepairResultDisplay {
 # ============================================================================
 
 $MainForm = New-Object System.Windows.Forms.Form
-$MainForm.Text = "Windows PC Setup Utility v2.3"
+$MainForm.Text = "Windows PC Setup Utility v2.4"
 $MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
@@ -2771,7 +3006,7 @@ $HardenPanel = New-Object System.Windows.Forms.Panel
 $HardenPanel.Dock = "Fill"
 $HardenPanel.AutoScroll = $true
 
-$hardenY = New-IntroText -Panel $HardenPanel -Height 52 -YPosition 8 -Text "Install apps on this admin account first. Then create the daily standard user and apply machine-wide Defender settings. Sign in as that user to set up their desktop. Close the elevated PowerShell window before handover. PDF reader is on Install Apps. Chrome Workspace cloud-over-local is set in Google Admin, not here."
+$hardenY = New-IntroText -Panel $HardenPanel -Height 80 -YPosition 8 -Text "Install apps on this admin account first (Store-only and Smart App Control can block later installers). Creating a daily standard user is optional and off by default. If you skip it, the daily account stays an administrator and can still write HKLM, including Chrome policy; the settings below are friction, not least privilege. Harden is machine-wide. PDF reader is on Install Apps. Chrome Workspace cloud-over-local is set in Google Admin, not here."
 
 $hardenY = New-SectionHeader -Panel $HardenPanel -Text "Standard user" -YPosition $hardenY
 
@@ -2779,8 +3014,8 @@ $script:ChkHardenCreateUser = New-Object System.Windows.Forms.CheckBox
 $script:ChkHardenCreateUser.Text = "Create this user"
 $script:ChkHardenCreateUser.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
 $script:ChkHardenCreateUser.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
-$script:ChkHardenCreateUser.Checked = $true
-$script:MainTooltip.SetToolTip($script:ChkHardenCreateUser, "Creates a local Users-group account. Never an administrator. Off = apply Defender baseline only.")
+$script:ChkHardenCreateUser.Checked = $false
+$script:MainTooltip.SetToolTip($script:ChkHardenCreateUser, "Creates a local Users-group account. Never an administrator. Off is the common path; the daily account then stays an administrator.")
 $HardenPanel.Controls.Add($script:ChkHardenCreateUser)
 $hardenY += $script:UI.ItemSpacing
 
@@ -2830,6 +3065,16 @@ $script:MainTooltip.SetToolTip($script:ChkHardenMustChangePassword, "Leave off s
 $HardenPanel.Controls.Add($script:ChkHardenMustChangePassword)
 $hardenY += $script:UI.SectionSpacing
 
+$script:UpdateHardenUserFields = {
+    $on = $script:ChkHardenCreateUser.Checked
+    $script:TxtHardenUser.Enabled = $on
+    $script:TxtHardenPassword.Enabled = $on
+    $script:TxtHardenPasswordConfirm.Enabled = $on
+    $script:ChkHardenMustChangePassword.Enabled = $on
+}
+$script:ChkHardenCreateUser.Add_CheckedChanged({ & $script:UpdateHardenUserFields })
+& $script:UpdateHardenUserFields
+
 $hardenY = New-SectionHeader -Panel $HardenPanel -Text "Microsoft baseline" -YPosition $hardenY
 
 $script:ChkHardenDefenderCloud = New-Object System.Windows.Forms.CheckBox
@@ -2871,7 +3116,45 @@ $script:ChkHardenAsr.Size = New-Object System.Drawing.Size(600, $script:UI.Check
 $script:ChkHardenAsr.Checked = $true
 $script:MainTooltip.SetToolTip($script:ChkHardenAsr, "LSASS credential steal, WMI persistence, vulnerable drivers, email/webmail executables, script-launched downloads, unsigned USB executables. Does not block Office or Acrobat child processes.")
 $HardenPanel.Controls.Add($script:ChkHardenAsr)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenAutoLock = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenAutoLock.Text = "Auto-lock the screen after 10 minutes idle"
+$script:ChkHardenAutoLock.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenAutoLock.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenAutoLock.Checked = $true
+$script:MainTooltip.SetToolTip($script:ChkHardenAutoLock, "Machine inactivity limit (secpol InactivityTimeoutSecs=600). Not the Settings-tab display-off power option. Unlock does not clear this.")
+$HardenPanel.Controls.Add($script:ChkHardenAutoLock)
+$hardenY += $script:UI.SectionSpacing
+
+$hardenY = New-SectionHeader -Panel $HardenPanel -Text "Block unknown installers" -YPosition $hardenY
+$hardenY = New-IntroText -Panel $HardenPanel -Height 22 -YPosition $hardenY -Text "Turn these off with Unlock for maintenance before installing anything with winget."
+
+$script:ChkHardenStoreOnly = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenStoreOnly.Text = "Allow apps from the Microsoft Store only"
+$script:ChkHardenStoreOnly.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenStoreOnly.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenStoreOnly.Checked = $true
+$script:MainTooltip.SetToolTip($script:ChkHardenStoreOnly, "Machine policy greys Choose where to get apps. Does not block USB or network-share copies. Home edition may not enforce.")
+$HardenPanel.Controls.Add($script:ChkHardenStoreOnly)
+$hardenY += $script:UI.ItemSpacing
+
+$script:ChkHardenSac = New-Object System.Windows.Forms.CheckBox
+$script:ChkHardenSac.Text = "Smart App Control (On)"
+$script:ChkHardenSac.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $hardenY)
+$script:ChkHardenSac.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+$script:ChkHardenSac.Checked = $IsWindows11
+$script:ChkHardenSac.Enabled = $IsWindows11
+$script:MainTooltip.SetToolTip($script:ChkHardenSac, $(if ($IsWindows11) { "Windows 11 execution control. After it enforces, this unsigned script may not start; use Windows Security to turn SAC Off, then Unlock for Store-only." } else { "Windows 11 only." }))
+$HardenPanel.Controls.Add($script:ChkHardenSac)
 $hardenY += 40
+
+$script:BtnHardenUnlock = New-Object System.Windows.Forms.Button
+$script:BtnHardenUnlock.Text = "&Unlock for maintenance"
+$script:BtnHardenUnlock.Location = New-Object System.Drawing.Point(255, $hardenY)
+$script:BtnHardenUnlock.Size = New-Object System.Drawing.Size(210, $script:UI.ButtonHeight)
+$script:BtnHardenUnlock.FlatStyle = "Flat"
+$script:MainTooltip.SetToolTip($script:BtnHardenUnlock, "Smart App Control Off + allow non-Store installers, so you can use Install Apps. Run Apply Harden again afterwards. Does not touch Defender.")
 
 $script:BtnApplyHarden = New-Object System.Windows.Forms.Button
 $script:BtnApplyHarden.Text = "Apply &Harden"
@@ -2881,7 +3164,7 @@ $script:BtnApplyHarden.BackColor = $script:UI.AccentColor
 $script:BtnApplyHarden.ForeColor = [System.Drawing.Color]::White
 $script:BtnApplyHarden.FlatStyle = "Flat"
 Add-ButtonHoverEffect -Button $script:BtnApplyHarden
-$script:MainTooltip.SetToolTip($script:BtnApplyHarden, "Create the user if selected, then apply checked Defender settings (Alt+H)")
+$script:MainTooltip.SetToolTip($script:BtnApplyHarden, "Create the user if selected, then apply checked Harden settings (Alt+H)")
 
 $script:BtnApplyHarden.Add_Click({
     $disabledButton = $false
@@ -2921,8 +3204,11 @@ $script:BtnApplyHarden.Add_Click({
         if ($script:ChkHardenSmartScreen.Checked) { [void]$lines.Add("SmartScreen Warn") }
         if ($script:ChkHardenNetwork.Checked) { [void]$lines.Add("Network Protection") }
         if ($script:ChkHardenAsr.Checked) { [void]$lines.Add("ASR six-rule baseline") }
+        if ($script:ChkHardenAutoLock.Checked) { [void]$lines.Add("Auto-lock after 10 minutes idle") }
+        if ($script:ChkHardenStoreOnly.Checked) { [void]$lines.Add("Microsoft Store only (policy)") }
+        if ($script:ChkHardenSac.Checked) { [void]$lines.Add("Smart App Control On") }
 
-        $anyBaseline = $script:ChkHardenDefenderCloud.Checked -or $script:ChkHardenPua.Checked -or $script:ChkHardenSmartScreen.Checked -or $script:ChkHardenNetwork.Checked -or $script:ChkHardenAsr.Checked
+        $anyBaseline = $script:ChkHardenDefenderCloud.Checked -or $script:ChkHardenPua.Checked -or $script:ChkHardenSmartScreen.Checked -or $script:ChkHardenNetwork.Checked -or $script:ChkHardenAsr.Checked -or $script:ChkHardenAutoLock.Checked -or $script:ChkHardenStoreOnly.Checked -or $script:ChkHardenSac.Checked
         if (-not $createUser -and -not $anyBaseline) {
             [System.Windows.Forms.MessageBox]::Show("Nothing selected to apply.", "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             return
@@ -2935,6 +3221,7 @@ $script:BtnApplyHarden.Add_Click({
         }
 
         Set-ButtonDisabled -Button $script:BtnApplyHarden -WorkingText "Applying..."
+        Set-ButtonDisabled -Button $script:BtnHardenUnlock -WorkingText "Wait..."
         $disabledButton = $true
         $successCount = 0
         $failCount = 0
@@ -2950,6 +3237,9 @@ $script:BtnApplyHarden.Add_Click({
         if ($script:ChkHardenSmartScreen.Checked) { $total++ }
         if ($script:ChkHardenNetwork.Checked) { $total++ }
         if ($script:ChkHardenAsr.Checked) { $total++ }
+        if ($script:ChkHardenAutoLock.Checked) { $total++ }
+        if ($script:ChkHardenStoreOnly.Checked) { $total++ }
+        if ($script:ChkHardenSac.Checked) { $total++ }
         if ($total -lt 1) { $total = 1 }
         $current = 0
 
@@ -2995,12 +3285,32 @@ $script:BtnApplyHarden.Add_Click({
             Update-Progress -Current $current -Total $total -CurrentItem "ASR"
             if (Set-HardenAsrBaseline) { $successCount++ } else { $failCount++ }
         }
+        if ($script:ChkHardenAutoLock.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Auto-lock"
+            if (Set-HardenInactivityLock) { $successCount++ } else { $failCount++ }
+        }
+        if ($script:ChkHardenStoreOnly.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Store-only"
+            if (Set-HardenStoreOnly) { $successCount++ } else { $failCount++ }
+        }
+        $sacApplied = $false
+        if ($script:ChkHardenSac.Checked) {
+            $current++
+            Update-Progress -Current $current -Total $total -CurrentItem "Smart App Control"
+            if (Set-HardenSmartAppControlOn) { $successCount++; $sacApplied = $true } else { $failCount++ }
+        }
 
         Hide-Progress
         $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
         Update-Status "${dryRunMsg}Harden complete. Success: $successCount, Failed: $failCount"
+        $sacNote = ""
+        if ($sacApplied) {
+            $sacNote = "`n`nSmart App Control: reboot may be required. This unsigned tool may not start while SAC is on. Windows Security is the SAC Off path in that case, then Unlock / Apply in this tab."
+        }
         [System.Windows.Forms.MessageBox]::Show(
-            "${dryRunMsg}Harden complete.`n`nSuccessful: $successCount`nFailed: $failCount`n`nClose the elevated PowerShell window before handover.`n`nLog: $script:LogPath",
+            "${dryRunMsg}Harden complete.`n`nSuccessful: $successCount`nFailed: $failCount${sacNote}`n`nClose the elevated PowerShell window before handover.`n`nLog: $script:LogPath",
             "Harden",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -3014,6 +3324,7 @@ $script:BtnApplyHarden.Add_Click({
         Hide-Progress
         if ($disabledButton) {
             Set-ButtonEnabled -Button $script:BtnApplyHarden
+            Set-ButtonEnabled -Button $script:BtnHardenUnlock
         }
         $script:DryRun = $false
         $script:TxtHardenPassword.Text = ""
@@ -3021,6 +3332,83 @@ $script:BtnApplyHarden.Add_Click({
     }
 })
 $HardenPanel.Controls.Add($script:BtnApplyHarden)
+
+$script:BtnHardenUnlock.Add_Click({
+    $disabledButton = $false
+    try {
+        $script:DryRun = $script:ChkDryRun.Checked
+
+        $sac = Get-HardenSacState
+        $sacLine = 'Smart App Control: not applicable'
+        if ($sac.State -eq 'Unsupported') {
+            $sacLine = 'Smart App Control: not applicable'
+        }
+        elseif ($sac.State -eq 'Off') {
+            $sacLine = 'Smart App Control: already Off, nothing to do'
+        }
+        else {
+            $sacLine = 'Smart App Control: On -> Off (reboot may be required; turn back on with Apply Harden or Windows Security)'
+        }
+
+        $storePresent = $false
+        $storeKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen'
+        if (Test-Path $storeKey) {
+            $storeProps = Get-ItemProperty -Path $storeKey -ErrorAction SilentlyContinue
+            if ($storeProps -and ($null -ne $storeProps.PSObject.Properties['ConfigureAppInstallControlEnabled'] -or $null -ne $storeProps.PSObject.Properties['ConfigureAppInstallControl'])) {
+                $storePresent = $true
+            }
+        }
+        $storeLine = if ($storePresent) {
+            'Remove Store-only policy (ConfigureAppInstallControlEnabled, ConfigureAppInstallControl)'
+        }
+        else {
+            'Store-only policy not present, nothing to do'
+        }
+
+        $detail = "$sacLine`n$storeLine`nDefender, SmartScreen, ASR and the 10-minute lock are NOT changed."
+        if (-not (Show-ConfirmationDialog -Title "Confirm Unlock" -SelectedCount 2 -ActionType "apply" -IsDryRun $script:DryRun -Detail $detail)) {
+            return
+        }
+
+        Set-ButtonDisabled -Button $script:BtnApplyHarden -WorkingText "Wait..."
+        Set-ButtonDisabled -Button $script:BtnHardenUnlock -WorkingText "Unlocking..."
+        $disabledButton = $true
+        $successCount = 0
+        $failCount = 0
+
+        if ($script:DryRun) {
+            Write-Log "=== DRY RUN MODE - No changes will be made ===" "INFO"
+        }
+
+        Update-Progress -Current 1 -Total 2 -CurrentItem "Store-only"
+        if (Remove-HardenStoreOnly) { $successCount++ } else { $failCount++ }
+        Update-Progress -Current 2 -Total 2 -CurrentItem "Smart App Control"
+        if (Set-HardenSmartAppControlOff) { $successCount++ } else { $failCount++ }
+
+        Hide-Progress
+        $dryRunMsg = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        Update-Status "${dryRunMsg}Unlock complete. Success: $successCount, Failed: $failCount"
+        [System.Windows.Forms.MessageBox]::Show(
+            "${dryRunMsg}Unlock complete.`n`nSuccessful: $successCount`nFailed: $failCount`n`nInstall apps, then Apply Harden again.`n`nLog: $script:LogPath",
+            "Harden",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+    }
+    catch {
+        Write-Log "Error during Unlock: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Harden", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        Hide-Progress
+        if ($disabledButton) {
+            Set-ButtonEnabled -Button $script:BtnApplyHarden
+            Set-ButtonEnabled -Button $script:BtnHardenUnlock
+        }
+        $script:DryRun = $false
+    }
+})
+$HardenPanel.Controls.Add($script:BtnHardenUnlock)
 
 $TabHarden.Controls.Add($HardenPanel)
 
@@ -3470,7 +3858,7 @@ $MainForm.Controls.Add($script:StatusLabel)
 
 # Version and help info
 $LblVersion = New-Object System.Windows.Forms.Label
-$LblVersion.Text = "v2.3 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Text = "v2.4 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+U (Unlock), Alt+I (Install), Alt+Y (Dry Run)"
 $LblVersion.Location = New-Object System.Drawing.Point(10, 530)
 $LblVersion.Size = New-Object System.Drawing.Size(665, 18)
 $LblVersion.ForeColor = $script:UI.SubtleGray

@@ -36,6 +36,9 @@ Do not run `Windows-PC-Setup.ps1` on this host without an explicit OK. It auto-e
 - **Harden existing-user is fail-closed.** Typing the current admin, German `Gast`, or a non-Users member must not skip to the Defender baseline. If “must change password at next logon” is on, retry an already-created standard user by running `net user /logonpasswordchg:yes` again; do not treat skip-exists as success until that postcondition holds.
 - **PowerShell 5.1 + UTF-8 without BOM.** An em dash `—` inside a double-quoted string is decoded as Windows-1252 `â€”`; the `”` byte silently ends the string and later functions disappear from the AST with **zero parse errors**. `test-syntax.ps1` cannot catch that. Keep Harden log strings ASCII, or save the script UTF-8 with BOM. `test-harden.ps1` asserts Defender functions exist in the 5.1 AST and that `New-HardenStandardUser` does not span hundreds of lines.
 - **LocalAccounts is 64-bit only** on 64-bit Windows. 32-bit PowerShell cannot create the standard user.
+- **Harden auto-lock is `InactivityTimeoutSecs=600`**, not the Settings-tab powercfg display-off. Unlock does not clear it. Undo: secpol Interactive logon: Machine inactivity limit = 0, or delete the DWORD.
+- **Harden Store-only is machine policy** `ConfigureAppInstallControl=StoreOnly`, not Explorer `AicEnabled`. Does not cover USB/network-share/offline copies. Home SKU may not enforce. Unlock deletes those two values only, never the SmartScreen key.
+- **Harden SAC** writes `VerifiedAndReputablePolicyState`. Win11 only. After enforcement this unsigned `.ps1` may not start; Windows Security is the SAC Off path, then Unlock for Store-only. Do not tell technicians that 25H2 needs a Windows reset to turn SAC back on.
 
 SKU snapshot (Microsoft release-health, 2026-08 B): 25H2 `26200.9168`; 24H2 `26100.9168` Home/Pro EOS 2026-10-13; 26H1 `28000.2704` OEM-only; Win10 consumer EOS 2025-10-14 (ESU/LTSC still serviced).
 

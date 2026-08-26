@@ -9,6 +9,9 @@
 .vscode/
 .idea/
 
+# Local agent overrides (committed: settings.json, CLAUDE.md)
+.claude/settings.local.json
+
 # Plan files
 *.md.backup
 .todo/

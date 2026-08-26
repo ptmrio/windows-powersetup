@@ -66,7 +66,16 @@ $requiredFns = @(
     'Set-HardenPua',
     'Set-HardenNetworkProtection',
     'Set-HardenAsrBaseline',
-    'Set-HardenSmartScreenWarn'
+    'Set-HardenSmartScreenWarn',
+    'Test-HardenIsHomeEdition',
+    'Test-HardenSacUiVersionAllowsOn',
+    'Convert-HardenSacState',
+    'Get-HardenSacState',
+    'Set-HardenInactivityLock',
+    'Set-HardenStoreOnly',
+    'Remove-HardenStoreOnly',
+    'Set-HardenSmartAppControlOn',
+    'Set-HardenSmartAppControlOff'
 )
 foreach ($need in $requiredFns) {
     Assert-Harden ($fnNames -contains $need) "$need must exist in the PowerShell 5.1 AST"
@@ -84,6 +93,9 @@ if ($nuAst) {
 Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Test-HardenUsername'
 Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Test-HardenPasswordPair'
 Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Merge-HardenAsrState'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Test-HardenIsHomeEdition'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Test-HardenSacUiVersionAllowsOn'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Convert-HardenSacState'
 
 $ok = Test-HardenUsername 'jsmith'
 Assert-Harden $ok.Ok 'jsmith should pass'
@@ -143,6 +155,40 @@ $firstWanted = '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2'
 $promoted = Merge-HardenAsrState -ExistingIds @($firstWanted) -ExistingActions @(2)
 $pidx = [array]::IndexOf(@($promoted.Ids | ForEach-Object { $_.ToString().ToLower() }), $firstWanted.ToLower())
 Assert-Harden ([int]$promoted.Actions[$pidx] -eq 1) 'existing wanted ASR rule must be set to Block'
+
+Assert-Harden ($scriptText -notmatch "Name 'AicEnabled'") 'Windows-PC-Setup.ps1 must not write Explorer AicEnabled'
+Assert-Harden ($scriptText -match 'ChkHardenCreateUser\.Checked = \$false') 'Create user checkbox must default off'
+Assert-Harden ($scriptText -match 'Unlock for maintenance') 'Unlock for maintenance button must exist'
+Assert-Harden ($scriptText -match 'ChkHardenAutoLock') 'Auto-lock checkbox must exist'
+Assert-Harden ($scriptText -match 'ChkHardenStoreOnly') 'Store-only checkbox must exist'
+Assert-Harden ($scriptText -match 'ChkHardenSac') 'SAC checkbox must exist'
+Assert-Harden ($scriptText -match 'BtnHardenUnlock') 'Unlock button script variable must exist'
+
+Assert-Harden (Test-HardenIsHomeEdition 'Core') 'Core is Home'
+Assert-Harden (Test-HardenIsHomeEdition 'CoreSingleLanguage') 'CoreSingleLanguage is Home'
+Assert-Harden (-not (Test-HardenIsHomeEdition 'Professional')) 'Pro is not Home'
+Assert-Harden (Test-HardenSacUiVersionAllowsOn '1000.29628.1000.0') '29628 allows On'
+Assert-Harden (-not (Test-HardenSacUiVersionAllowsOn '1000.29553.0.0')) '29553 does not allow On'
+Assert-Harden (-not (Test-HardenSacUiVersionAllowsOn '')) 'empty version does not allow On'
+Assert-Harden ((Convert-HardenSacState 0) -eq 'Off') '0 is Off'
+Assert-Harden ((Convert-HardenSacState 1) -eq 'On') '1 is On'
+Assert-Harden ((Convert-HardenSacState 2) -eq 'Eval') '2 is Eval'
+
+function Write-Log { param($Message, $Level = 'INFO') }
+$script:DryRun = $true
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Set-HardenInactivityLock'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Set-HardenStoreOnly'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Remove-HardenStoreOnly'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Get-HardenSacState'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Set-HardenSmartAppControlOn'
+Import-HardenFunctionFromScript -Path $scriptPath -FunctionName 'Set-HardenSmartAppControlOff'
+Assert-Harden (Set-HardenInactivityLock) 'dry-run inactivity lock'
+Assert-Harden (Set-HardenStoreOnly) 'dry-run Store-only'
+Assert-Harden (Remove-HardenStoreOnly) 'dry-run remove Store-only'
+Assert-Harden (Set-HardenSmartAppControlOn) 'dry-run SAC On'
+Assert-Harden (Set-HardenSmartAppControlOff) 'dry-run SAC Off'
+$sac = Get-HardenSacState
+Assert-Harden ($null -ne $sac.State) 'Get-HardenSacState returns State'
 
 if ($failures -eq 0) {
     Write-Host 'HARDEN HELPER TESTS PASSED' -ForegroundColor Green

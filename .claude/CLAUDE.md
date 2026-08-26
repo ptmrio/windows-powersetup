@@ -1,41 +1,24 @@
-# Project: Windows PowerSetup
+# Windows PowerSetup
 
-## Overview
-PowerShell GUI utility for IT admins to set up Windows PCs. Single-file script (~1970 lines).
+Public MIT WinForms PowerShell GUI for IT admins setting up Windows 10/11 PCs. Company: SPQRK Web Solutions. Version 2.4.
 
-## Key Facts
-- **Company**: SPQRK Web Solutions
-- **License**: MIT
-- **Supports**: Windows 10 and 11
-- **Requires**: PowerShell 5.1+, Admin privileges
+Cursor and other harnesses: read `AGENTS.md` first. Traps: `docs/known.md`.
 
 ## Architecture
-- Single file: `Windows-PC-Setup.ps1`
-- Uses Windows Forms GUI (`System.Windows.Forms`)
-- Auto-elevates to admin if needed
-- Logs to `$env:TEMP\PCSetup_*.log`
 
-## UI Constants
-Located at top of script in `$script:UI` hashtable - colors, spacing, sizes.
+- Single file: `Windows-PC-Setup.ps1` (~2800 lines). Do not split unless asked.
+- `System.Windows.Forms`. Auto-elevates if not admin. Logs to `$env:TEMP\PCSetup_*.log`.
+- UI constants: `$script:UI` hashtable at top of script.
+- Tabs: Bloatware · Settings · Install Apps (winget) · Harden · Repair (DISM / SFC / CHKDSK).
 
-## Syntax Validation
+## Verify
+
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File test-syntax.ps1
 ```
 
-## Git Push (WSL)
-```bash
-git config --global credential.helper manager-core
-git push
-```
+Do not run the GUI script on this host unless the user explicitly asks.
 
-## Tabs
-1. **Remove Bloatware** - AppX and Win32 apps
-2. **Settings** - Taskbar, Start Menu, Power, Explorer
-3. **Install Apps** - Via winget
+## Shortcuts
 
-## Keyboard Shortcuts
-- Alt+R: Remove Selected
-- Alt+A: Apply Settings
-- Alt+I: Install Selected
-- Alt+Y: Dry Run toggle
+Alt+R remove · Alt+A apply settings · Alt+H harden · Alt+U unlock · Alt+I install · Alt+Y dry-run toggle.

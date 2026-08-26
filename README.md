@@ -32,11 +32,11 @@ If you also find yourself:
 - **Remove Bloatware** - Uninstall pre-installed apps (Candy Crush, TikTok, McAfee, etc.)
 - **Configure Settings** - Taskbar, Start Menu, Power, Explorer preferences
 - **Install Apps** - Via winget (Chrome, Brave, PDFgear, VS Code, 7-Zip, VLC, etc.)
-- **Harden** - Create a standard local user and apply conservative Defender / SmartScreen / ASR settings
+- **Harden** - Optional standard local user, Defender / SmartScreen / ASR, 10-minute auto-lock, Store-only app sources, Smart App Control (Unlock for maintenance)
 - **System Repair** - DISM, SFC, and CHKDSK tools
 - **Dry Run Mode** - Preview all changes before applying
 - **Tooltips** - Hover over any item for detailed explanations
-- **Keyboard Shortcuts** - Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+I (Install), Alt+Y (Dry Run)
+- **Keyboard Shortcuts** - Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+U (Unlock), Alt+I (Install), Alt+Y (Dry Run)
 
 ## Requirements
 
@@ -66,7 +66,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\Windows-PC-Setup.ps1
 ```
 
-On a clean PC: finish the admin account, Windows Update, and drivers, run this tool (install apps while still admin), Harden, then sign in as the new standard user. Close the elevated PowerShell window this script leaves (`-NoExit`) before handover. A standard user cannot write HKLM or install machine-wide software without the admin password; they can still run downloaded EXEs and write HKCU.
+On a clean PC: finish the admin account, Windows Update, and drivers, run this tool (install apps while still admin), then Harden. Creating a daily standard user is optional and off by default; skipping it means the daily account can still write HKLM. Store-only and Smart App Control are friction on unknown installers; Unlock for maintenance turns those two off so you can use Install Apps, then Apply Harden again. Close the elevated PowerShell window this script leaves (`-NoExit`) before handover.
 
 ## Settings Applied
 
