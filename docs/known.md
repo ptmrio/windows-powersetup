@@ -8,6 +8,7 @@ Commands and traps only. Delete what stops being true.
 |---|---|
 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File test-syntax.ps1` | Parser accepts `Windows-PC-Setup.ps1` (`exit 1` on errors) |
 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File test-harden.ps1` | Production Harden helpers extracted from the script AST |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File test-brave.ps1` | Production Brave helpers extracted from the script AST |
 
 Do not run `Windows-PC-Setup.ps1` on this host without an explicit OK. It auto-elevates.
 
@@ -39,6 +40,14 @@ Do not run `Windows-PC-Setup.ps1` on this host without an explicit OK. It auto-e
 - **Harden auto-lock is `InactivityTimeoutSecs=600`**, not the Settings-tab powercfg display-off. Unlock does not clear it. Undo: secpol Interactive logon: Machine inactivity limit = 0, or delete the DWORD.
 - **Harden Store-only is machine policy** `ConfigureAppInstallControl=StoreOnly`, not Explorer `AicEnabled`. Does not cover USB/network-share/offline copies. Home SKU may not enforce. Unlock deletes those two values only, never the SmartScreen key.
 - **Harden SAC** writes `VerifiedAndReputablePolicyState`. Win11 only. After enforcement this unsigned `.ps1` may not start; Windows Security is the SAC Off path, then Unlock for Store-only. Do not tell technicians that 25H2 needs a Windows reset to turn SAC back on.
+- **Brave config is HKCU policy**, not Preferences JSON. Chromium Secure Preferences would drop startup/search if those were file-poked. Undo: delete `HKCU\SOFTWARE\Policies\BraveSoftware\Brave`.
+- **Brave shortcuts** must use `--profile-directory` with the folder id (`Default`, `Profile 1`), not the display name.
+- **Apply Brave settings before Harden Store-only/SAC.** The Proton Pass force-install is Brave fetching a CWS CRX on next launch.
+- **HKCU Brave config does not follow a later standard user.** It applies to the Windows account that ran the elevated script.
+- **Proton Pass sign-in, PIN, and Brave Sync stay manual.**
+- **Brave Downloads path** is the Windows Downloads Known Folder, not `$HOME\Downloads`.
+- **Brave tab enablement is brave.exe on disk**, not this session's Install Selected. Existing installs are valid targets.
+- **Unchecked Brave rows skip that write.** They do not delete a policy already present. Undo: delete `HKCU\SOFTWARE\Policies\BraveSoftware\Brave`.
 
 SKU snapshot (Microsoft release-health, 2026-08 B): 25H2 `26200.9168`; 24H2 `26100.9168` Home/Pro EOS 2026-10-13; 26H1 `28000.2704` OEM-only; Win10 consumer EOS 2025-10-14 (ESU/LTSC still serviced).
 

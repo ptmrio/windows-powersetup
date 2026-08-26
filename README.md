@@ -32,11 +32,12 @@ If you also find yourself:
 - **Remove Bloatware** - Uninstall pre-installed apps (Candy Crush, TikTok, McAfee, etc.)
 - **Configure Settings** - Taskbar, Start Menu, Power, Explorer preferences
 - **Install Apps** - Via winget (Chrome, Brave, PDFgear, VS Code, 7-Zip, VLC, etc.)
+- **Brave** - HKCU policies (Google, new tab, Proton Pass extension, download prompt) with per-setting checkboxes, plus profile desktop shortcuts. Apply enables when brave.exe is on disk.
 - **Harden** - Optional standard local user, Defender / SmartScreen / ASR, 10-minute auto-lock, Store-only app sources, Smart App Control (Unlock for maintenance)
 - **System Repair** - DISM, SFC, and CHKDSK tools
 - **Dry Run Mode** - Preview all changes before applying
 - **Tooltips** - Hover over any item for detailed explanations
-- **Keyboard Shortcuts** - Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+U (Unlock), Alt+I (Install), Alt+Y (Dry Run)
+- **Keyboard Shortcuts** - Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+U (Unlock), Alt+I (Install), Alt+B (Brave settings), Alt+P (profile shortcuts), Alt+Y (Dry Run)
 
 ## Requirements
 
@@ -66,7 +67,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\Windows-PC-Setup.ps1
 ```
 
-On a clean PC: finish the admin account, Windows Update, and drivers, run this tool (install apps while still admin), then Harden. Creating a daily standard user is optional and off by default; skipping it means the daily account can still write HKLM. Store-only and Smart App Control are friction on unknown installers; Unlock for maintenance turns those two off so you can use Install Apps, then Apply Harden again. Close the elevated PowerShell window this script leaves (`-NoExit`) before handover.
+On a clean PC: finish the admin account, Windows Update, and drivers, run this tool (install apps while still admin). If Brave is already on the PC or you just installed it, use the Brave tab: tick the settings you want, Apply Brave settings, open Brave to name profiles and sign into Proton Pass, then create profile shortcuts. Do Brave settings before Harden. Creating a daily standard user is optional and off by default; skipping it means the daily account can still write HKLM. Brave policies apply to this Windows account only. Store-only and Smart App Control are friction on unknown installers; Unlock for maintenance turns those two off so you can use Install Apps, then Apply Harden again. Close the elevated PowerShell window this script leaves (`-NoExit`) before handover.
 
 ## Settings Applied
 

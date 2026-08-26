@@ -7,10 +7,11 @@
     - Remove bloatware (Windows built-in, Lenovo, and other OEM)
     - Configure system settings (Taskbar, Start Menu, Power)
     - Install common applications via winget
+    - Configure Brave HKCU policies and profile shortcuts (Brave tab; enabled when brave.exe is on disk)
     - Create an optional standard local user and apply a Defender baseline, 10-minute lock, Store-only policy, and Smart App Control (Harden tab)
 .NOTES
     Author: IT Admin Utility
-    Version: 2.4
+    Version: 2.6
     Supports: Windows 10 and Windows 11
 #>
 
@@ -48,7 +49,7 @@ $IsWindows11 = [int]$OSBuild -ge 22000
 # ProductName registry value is unreliable on Win11 (often still says "Windows 10")
 $OSName = if ($IsWindows11) { $OSNameRaw -replace 'Windows 10', 'Windows 11' } else { $OSNameRaw }
 
-Write-Host "Windows PC Setup Utility v2.4 Starting..."
+Write-Host "Windows PC Setup Utility v2.6 Starting..."
 Write-Host "OS: $OSName (Build $OSBuild)"
 Write-Host "Windows 11: $IsWindows11"
 Write-Host "Log file: $script:LogPath"
@@ -1086,6 +1087,381 @@ function Set-HardenSmartAppControlOff {
     catch {
         Write-Log "Failed SAC Off: $($_.Exception.Message)" "ERROR"
         return $false
+    }
+}
+
+# ============================================================================
+# BRAVE HKCU POLICY + PROFILE SHORTCUTS
+# ============================================================================
+
+$script:BraveProtonPassExtensionId = 'ghmbeldphafepmbegfdlkpapadhbakde'
+$script:BraveProtonPassForceInstall = 'ghmbeldphafepmbegfdlkpapadhbakde;https://clients2.google.com/service/update2/crx'
+$script:BtnBraveApply = $null
+$script:BtnBraveShortcuts = $null
+$script:LblBraveStatus = $null
+$script:BraveCheckboxes = @()
+
+function Get-BravePolicyPath {
+    return 'HKCU:\SOFTWARE\Policies\BraveSoftware\Brave'
+}
+
+function Get-BraveUserDataDir {
+    return (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data')
+}
+
+function Get-BraveSearchPolicyMap {
+    return @{
+        DefaultSearchProviderEnabled    = 1
+        DefaultSearchProviderName       = 'Google'
+        DefaultSearchProviderKeyword    = 'google.com'
+        DefaultSearchProviderSearchURL  = 'https://www.google.com/search?q={searchTerms}'
+        DefaultSearchProviderSuggestURL = 'https://www.google.com/complete/search?output=chrome&q={searchTerms}'
+    }
+}
+
+function Get-BraveInstallPath {
+    $roots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $env:LOCALAPPDATA
+    )
+    foreach ($root in $roots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $p = Join-Path $root 'BraveSoftware\Brave-Browser\Application\brave.exe'
+        if (Test-Path -LiteralPath $p) {
+            return $p
+        }
+    }
+    return ''
+}
+
+function Test-BraveInstalled {
+    return -not [string]::IsNullOrWhiteSpace((Get-BraveInstallPath))
+}
+
+function Get-BraveDownloadsFolder {
+    $guid = '{374DE290-123F-4565-9164-39C4925E467B}'
+    try {
+        $folderKey = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop
+        $prop = $folderKey.PSObject.Properties[$guid]
+        if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+            return [Environment]::ExpandEnvironmentVariables([string]$prop.Value)
+        }
+    }
+    catch {
+    }
+    return (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads')
+}
+
+function ConvertTo-BraveShortcutFileName {
+    param([string]$ProfileName)
+    $base = if ([string]::IsNullOrWhiteSpace($ProfileName)) { '' } else { $ProfileName.Trim() }
+    foreach ($ch in @('<', '>', ':', '"', '/', '\', '|', '?', '*')) {
+        $base = $base.Replace($ch, '_')
+    }
+    $base = $base -replace '[\x00-\x1F]', '_'
+    $base = $base.TrimEnd('.', ' ')
+    if ([string]::IsNullOrWhiteSpace($base)) { $base = 'Profile' }
+    return "Brave $base"
+}
+
+function Get-BraveProfilesForShortcuts {
+    param([string]$LocalStateJson)
+    $out = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($LocalStateJson)) { return @() }
+    try {
+        $obj = $LocalStateJson | ConvertFrom-Json
+    }
+    catch {
+        return @()
+    }
+    if ($null -eq $obj) { return @() }
+    $profileProp = $obj.PSObject.Properties['profile']
+    if (-not $profileProp -or $null -eq $profileProp.Value) { return @() }
+    $cacheProp = $profileProp.Value.PSObject.Properties['info_cache']
+    if (-not $cacheProp -or $null -eq $cacheProp.Value) { return @() }
+    foreach ($prop in $cacheProp.Value.PSObject.Properties) {
+        $id = $prop.Name
+        if ($id -eq 'Guest Profile' -or $id -eq 'System Profile') { continue }
+        $name = $id
+        if ($prop.Value -and $prop.Value.PSObject.Properties['name'] -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value.name)) {
+            $name = [string]$prop.Value.name
+        }
+        $out.Add([pscustomobject]@{ Id = $id; Name = $name })
+    }
+    return @($out.ToArray())
+}
+
+function Get-BraveUniqueShortcutNames {
+    param($Profiles)
+    $used = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($p in @($Profiles)) {
+        $file = ConvertTo-BraveShortcutFileName $p.Name
+        if ($used.Contains($file)) {
+            $file = ConvertTo-BraveShortcutFileName ("{0}_{1}" -f $p.Name, ($p.Id -replace ' ', '_'))
+        }
+        $n = 2
+        $candidate = $file
+        while ($used.Contains($candidate)) {
+            $candidate = ConvertTo-BraveShortcutFileName ("{0}_{1}_{2}" -f $p.Name, ($p.Id -replace ' ', '_'), $n)
+            $n++
+        }
+        [void]$used.Add($candidate)
+        $out.Add([pscustomobject]@{ Id = $p.Id; Name = $p.Name; FileName = $candidate })
+    }
+    return @($out.ToArray())
+}
+
+function Set-BravePolicyDword {
+    param([string]$Path, [string]$Name, [int]$Value)
+    Set-ItemProperty -Path $Path -Name $Name -Type DWord -Value $Value -ErrorAction Stop
+    $read = Get-ItemProperty -Path $Path -ErrorAction Stop
+    $prop = $read.PSObject.Properties[$Name]
+    if (-not $prop -or [int]$prop.Value -ne $Value) {
+        throw "DWORD $Name did not read back as $Value"
+    }
+}
+
+function Set-BravePolicyString {
+    param([string]$Path, [string]$Name, [string]$Value)
+    Set-ItemProperty -Path $Path -Name $Name -Type String -Value $Value -ErrorAction Stop
+    $read = Get-ItemProperty -Path $Path -ErrorAction Stop
+    $prop = $read.PSObject.Properties[$Name]
+    if (-not $prop -or [string]$prop.Value -ne $Value) {
+        throw "SZ $Name did not read back"
+    }
+}
+
+function Set-BraveHkcuPolicies {
+    param(
+        [string[]]$Groups = @(
+            'Startup',
+            'Search',
+            'PasswordManager',
+            'AutofillAddress',
+            'AutofillCreditCard',
+            'DownloadPrompt',
+            'DownloadDirectory',
+            'ProtonPass'
+        )
+    )
+    $selected = @($Groups | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($selected.Count -eq 0) { return $true }
+
+    $path = Get-BravePolicyPath
+    $map = Get-BraveSearchPolicyMap
+    $downloads = Get-BraveDownloadsFolder
+    $forceValue = $script:BraveProtonPassForceInstall
+    $protonId = $script:BraveProtonPassExtensionId
+
+    if ($script:DryRun) {
+        if ($selected -contains 'Startup') { Write-Log "Would set RestoreOnStartup=5" "INFO" }
+        if ($selected -contains 'Search') {
+            Write-Log "Would set DefaultSearchProviderName=$($map.DefaultSearchProviderName)" "INFO"
+            Write-Log "Would set DefaultSearchProviderKeyword=$($map.DefaultSearchProviderKeyword)" "INFO"
+            Write-Log "Would set DefaultSearchProviderSearchURL=$($map.DefaultSearchProviderSearchURL)" "INFO"
+            Write-Log "Would set DefaultSearchProviderSuggestURL=$($map.DefaultSearchProviderSuggestURL)" "INFO"
+            Write-Log "Would set DefaultSearchProviderEnabled=1" "INFO"
+        }
+        if ($selected -contains 'PasswordManager') { Write-Log "Would set PasswordManagerEnabled=0" "INFO" }
+        if ($selected -contains 'AutofillAddress') { Write-Log "Would set AutofillAddressEnabled=0" "INFO" }
+        if ($selected -contains 'AutofillCreditCard') { Write-Log "Would set AutofillCreditCardEnabled=0" "INFO" }
+        if ($selected -contains 'DownloadPrompt') { Write-Log "Would set PromptForDownloadLocation=1" "INFO" }
+        if ($selected -contains 'DownloadDirectory') { Write-Log "Would set DefaultDownloadDirectory=$downloads" "INFO" }
+        if ($selected -contains 'ProtonPass') { Write-Log "Would upsert ExtensionInstallForcelist $forceValue" "INFO" }
+        return $true
+    }
+
+    $ok = $true
+    try {
+        if (-not (Test-Path -LiteralPath $path)) {
+            New-Item -Path $path -Force -ErrorAction Stop | Out-Null
+        }
+    }
+    catch {
+        Write-Log "Failed to create Brave policy key: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+
+    if ($selected -contains 'Search') {
+        $szOk = $true
+        foreach ($pair in @(
+                @{ Name = 'DefaultSearchProviderName'; Value = [string]$map.DefaultSearchProviderName },
+                @{ Name = 'DefaultSearchProviderKeyword'; Value = [string]$map.DefaultSearchProviderKeyword },
+                @{ Name = 'DefaultSearchProviderSearchURL'; Value = [string]$map.DefaultSearchProviderSearchURL },
+                @{ Name = 'DefaultSearchProviderSuggestURL'; Value = [string]$map.DefaultSearchProviderSuggestURL }
+            )) {
+            try {
+                Set-BravePolicyString -Path $path -Name $pair.Name -Value $pair.Value
+                Write-Log "Set $($pair.Name)" "SUCCESS"
+            }
+            catch {
+                Write-Log "Failed $($pair.Name): $($_.Exception.Message)" "ERROR"
+                $szOk = $false
+                $ok = $false
+            }
+        }
+        if ($szOk) {
+            try {
+                Set-BravePolicyDword -Path $path -Name 'DefaultSearchProviderEnabled' -Value 1
+                Write-Log "Set DefaultSearchProviderEnabled=1" "SUCCESS"
+            }
+            catch {
+                Write-Log "Failed DefaultSearchProviderEnabled: $($_.Exception.Message)" "ERROR"
+                $ok = $false
+            }
+        }
+        else {
+            Write-Log "Skipped DefaultSearchProviderEnabled because search URLs failed" "ERROR"
+        }
+    }
+
+    $dwordPairs = @()
+    if ($selected -contains 'Startup') { $dwordPairs += @{ Name = 'RestoreOnStartup'; Value = 5 } }
+    if ($selected -contains 'PasswordManager') { $dwordPairs += @{ Name = 'PasswordManagerEnabled'; Value = 0 } }
+    if ($selected -contains 'AutofillAddress') { $dwordPairs += @{ Name = 'AutofillAddressEnabled'; Value = 0 } }
+    if ($selected -contains 'AutofillCreditCard') { $dwordPairs += @{ Name = 'AutofillCreditCardEnabled'; Value = 0 } }
+    if ($selected -contains 'DownloadPrompt') { $dwordPairs += @{ Name = 'PromptForDownloadLocation'; Value = 1 } }
+    foreach ($pair in $dwordPairs) {
+        try {
+            Set-BravePolicyDword -Path $path -Name $pair.Name -Value $pair.Value
+            Write-Log "Set $($pair.Name)=$($pair.Value)" "SUCCESS"
+        }
+        catch {
+            Write-Log "Failed $($pair.Name): $($_.Exception.Message)" "ERROR"
+            $ok = $false
+        }
+    }
+
+    if ($selected -contains 'DownloadDirectory') {
+        try {
+            Set-BravePolicyString -Path $path -Name 'DefaultDownloadDirectory' -Value $downloads
+            Write-Log "Set DefaultDownloadDirectory=$downloads" "SUCCESS"
+        }
+        catch {
+            Write-Log "Failed DefaultDownloadDirectory: $($_.Exception.Message)" "ERROR"
+            $ok = $false
+        }
+    }
+
+    if ($selected -contains 'ProtonPass') {
+        $listPath = Join-Path $path 'ExtensionInstallForcelist'
+        try {
+            if (-not (Test-Path -LiteralPath $listPath)) {
+                New-Item -Path $listPath -Force -ErrorAction Stop | Out-Null
+            }
+            $listKey = Get-Item -LiteralPath $listPath -ErrorAction Stop
+            $found = $false
+            $used = New-Object 'System.Collections.Generic.HashSet[int]'
+            foreach ($valueName in @($listKey.GetValueNames())) {
+                if ($valueName -notmatch '^\d+$') { continue }
+                $n = 0
+                try {
+                    $n = [int]$valueName
+                }
+                catch {
+                    continue
+                }
+                [void]$used.Add($n)
+                $existing = [string]$listKey.GetValue($valueName)
+                if ($existing -match [regex]::Escape($protonId)) {
+                    $found = $true
+                }
+            }
+            if ($found) {
+                Write-Log "Proton Pass already in ExtensionInstallForcelist" "SUCCESS"
+            }
+            else {
+                $nextN = 1
+                while ($used.Contains($nextN)) { $nextN++ }
+                $nextName = [string]$nextN
+                Set-BravePolicyString -Path $listPath -Name $nextName -Value $forceValue
+                Write-Log "Set ExtensionInstallForcelist\$nextName" "SUCCESS"
+            }
+        }
+        catch {
+            Write-Log "Failed ExtensionInstallForcelist: $($_.Exception.Message)" "ERROR"
+            $ok = $false
+        }
+    }
+
+    return $ok
+}
+
+function New-BraveProfileShortcuts {
+    param(
+        [string]$DesktopDir,
+        [string]$BraveExe,
+        $Profiles
+    )
+    $items = @(Get-BraveUniqueShortcutNames -Profiles $Profiles)
+    if ($items.Count -eq 0) {
+        Write-Log "No Brave profiles to shortcut" "WARN"
+        return $false
+    }
+    if ($script:DryRun) {
+        foreach ($item in $items) {
+            $lnk = Join-Path $DesktopDir ($item.FileName + '.lnk')
+            Write-Log "Would create shortcut $lnk -> --profile-directory=`"$($item.Id)`"" "INFO"
+        }
+        return $true
+    }
+    if ([string]::IsNullOrWhiteSpace($BraveExe) -or -not (Test-Path -LiteralPath $BraveExe)) {
+        Write-Log "brave.exe not found; no shortcuts written" "ERROR"
+        return $false
+    }
+    $ok = $true
+    $workDir = Split-Path -Parent $BraveExe
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($item in $items) {
+        $lnk = Join-Path $DesktopDir ($item.FileName + '.lnk')
+        try {
+            $sc = $shell.CreateShortcut($lnk)
+            $sc.TargetPath = $BraveExe
+            $sc.Arguments = "--profile-directory=`"$($item.Id)`""
+            $sc.WorkingDirectory = $workDir
+            $sc.IconLocation = "$BraveExe,0"
+            $sc.Save()
+            Write-Log "Created shortcut $lnk" "SUCCESS"
+        }
+        catch {
+            Write-Log "Failed shortcut $($item.FileName): $($_.Exception.Message)" "ERROR"
+            $ok = $false
+        }
+    }
+    return $ok
+}
+
+function Update-BraveTabState {
+    $exe = Get-BraveInstallPath
+    $installed = -not [string]::IsNullOrWhiteSpace($exe)
+    if ($null -ne $script:LblBraveStatus) {
+        if ($installed) {
+            $script:LblBraveStatus.Text = "Brave found: $exe"
+            $script:LblBraveStatus.ForeColor = $script:UI.SuccessGreen
+        }
+        else {
+            $script:LblBraveStatus.Text = "Brave not found. Install it on the Install Apps tab. This tab enables when brave.exe is on disk."
+            $script:LblBraveStatus.ForeColor = $script:UI.ErrorRed
+        }
+    }
+    if ($null -ne $script:BtnBraveApply) {
+        $script:BtnBraveApply.Enabled = $installed
+    }
+    $hasProfiles = $false
+    try {
+        $ls = Join-Path (Get-BraveUserDataDir) 'Local State'
+        if (Test-Path -LiteralPath $ls) {
+            $raw = Get-Content -LiteralPath $ls -Raw -ErrorAction Stop
+            $hasProfiles = (@(Get-BraveProfilesForShortcuts -LocalStateJson $raw).Count -gt 0)
+        }
+    }
+    catch {
+        $hasProfiles = $false
+    }
+    if ($null -ne $script:BtnBraveShortcuts) {
+        $script:BtnBraveShortcuts.Enabled = $hasProfiles
     }
 }
 
@@ -2223,7 +2599,7 @@ function Update-RepairResultDisplay {
 # ============================================================================
 
 $MainForm = New-Object System.Windows.Forms.Form
-$MainForm.Text = "Windows PC Setup Utility v2.4"
+$MainForm.Text = "Windows PC Setup Utility v2.6"
 $MainForm.Size = New-Object System.Drawing.Size(700, 620)
 $MainForm.StartPosition = "CenterScreen"
 $MainForm.FormBorderStyle = "FixedSingle"
@@ -2817,7 +3193,7 @@ $InstallAppsPanel.Dock = "Fill"
 $InstallAppsPanel.AutoScroll = $true
 
 # Introduction text
-$appYPos = New-IntroText -Panel $InstallAppsPanel -Text "Select applications to install via Windows Package Manager (winget). Installations run silently in the background." -YPosition 8
+$appYPos = New-IntroText -Panel $InstallAppsPanel -Height 48 -YPosition 8 -Text "Install applications with winget. Configure Brave on the Brave tab after brave.exe is on disk. Install apps before Harden."
 
 $wingetAvailable = Test-WingetInstalled
 
@@ -2988,6 +3364,7 @@ $BtnInstallApps.Add_Click({
         Hide-Progress
         Set-ButtonEnabled -Button $BtnInstallApps
         $script:DryRun = $false
+        Update-BraveTabState
     }
 })
 $InstallAppsPanel.Controls.Add($BtnInstallApps)
@@ -2995,7 +3372,253 @@ $InstallAppsPanel.Controls.Add($BtnInstallApps)
 $TabInstallApps.Controls.Add($InstallAppsPanel)
 
 # ============================================================================
-# TAB 4: HARDEN
+# TAB 4: BRAVE
+# ============================================================================
+
+$TabBrave = New-Object System.Windows.Forms.TabPage
+$TabBrave.Text = "Brave"
+$TabBrave.Padding = New-Object System.Windows.Forms.Padding(10)
+
+$BravePanel = New-Object System.Windows.Forms.Panel
+$BravePanel.Dock = "Fill"
+$BravePanel.AutoScroll = $true
+
+$braveY = New-IntroText -Panel $BravePanel -Height 72 -YPosition 8 -Text "HKCU Brave policies for this Windows account only; they do not follow a later standard user. Close Brave after Apply. Proton sign-in, PIN, and Sync stay manual. Do this before Harden Store-only / SAC."
+
+$script:LblBraveStatus = New-Object System.Windows.Forms.Label
+$script:LblBraveStatus.Location = New-Object System.Drawing.Point(20, $braveY)
+$script:LblBraveStatus.Size = New-Object System.Drawing.Size(600, 20)
+$BravePanel.Controls.Add($script:LblBraveStatus)
+$braveY += 25
+
+$braveY = New-SectionHeader -Panel $BravePanel -Text "Policies" -YPosition $braveY
+
+$script:BraveCheckboxes = @()
+$braveTooltips = @{
+    Startup            = "RestoreOnStartup=5. New windows open the New Tab page instead of the last session."
+    Search             = "Managed Google search (name, keyword, search URL, suggest URL). Greys the search engine row in brave://settings."
+    PasswordManager    = "Turns off Brave's password manager so Proton Pass can own logins."
+    AutofillAddress    = "Turns off Brave address autofill so Proton Pass can own addresses."
+    AutofillCreditCard = "Turns off Brave card autofill so Proton Pass can own cards."
+    DownloadPrompt     = "Brave asks where to save each file."
+    DownloadDirectory  = "Default folder is this user's Windows Downloads Known Folder, not a hardcoded path."
+    ProtonPass         = "Force-installs the Proton Pass extension on next Brave launch. Sign-in stays manual."
+}
+$braveItems = @(
+    @{ Tag = 'Startup'; Text = 'Open New Tab page on startup' },
+    @{ Tag = 'Search'; Text = 'Set search engine to Google' },
+    @{ Tag = 'PasswordManager'; Text = 'Disable Brave password manager' },
+    @{ Tag = 'AutofillAddress'; Text = 'Disable address autofill' },
+    @{ Tag = 'AutofillCreditCard'; Text = 'Disable card autofill' },
+    @{ Tag = 'DownloadPrompt'; Text = 'Ask where to save each download' },
+    @{ Tag = 'DownloadDirectory'; Text = 'Set default download folder to Windows Downloads' },
+    @{ Tag = 'ProtonPass'; Text = 'Force-install Proton Pass extension' }
+)
+foreach ($item in $braveItems) {
+    $chk = New-Object System.Windows.Forms.CheckBox
+    $chk.Text = $item.Text
+    $chk.Tag = $item.Tag
+    $chk.Location = New-Object System.Drawing.Point($script:UI.CheckboxIndent, $braveY)
+    $chk.Size = New-Object System.Drawing.Size(600, $script:UI.CheckboxHeight)
+    $chk.Checked = $true
+    $script:MainTooltip.SetToolTip($chk, $braveTooltips[$item.Tag])
+    $BravePanel.Controls.Add($chk)
+    $script:BraveCheckboxes += $chk
+    $braveY += $script:UI.ItemSpacing
+}
+
+$braveY += 10
+$script:BtnBraveApply = New-Object System.Windows.Forms.Button
+$script:BtnBraveApply.Text = "Apply &Brave settings"
+$script:BtnBraveApply.Location = New-Object System.Drawing.Point(480, $braveY)
+$script:BtnBraveApply.Size = New-Object System.Drawing.Size(150, $script:UI.ButtonHeight)
+$script:BtnBraveApply.BackColor = $script:UI.AccentColor
+$script:BtnBraveApply.ForeColor = [System.Drawing.Color]::White
+$script:BtnBraveApply.FlatStyle = "Flat"
+Add-ButtonHoverEffect -Button $script:BtnBraveApply
+$script:MainTooltip.SetToolTip($script:BtnBraveApply, "Write the checked HKCU Brave policies. Enabled when brave.exe is on disk. (Alt+B)")
+$script:BtnBraveApply.Add_Click({
+    if (-not (Test-BraveInstalled)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Brave was not found on this PC. This tab enables when brave.exe is on disk.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        Update-BraveTabState
+        return
+    }
+    $picked = @($script:BraveCheckboxes | Where-Object { $_.Checked })
+    if ($picked.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No Brave settings selected to apply.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        return
+    }
+    $script:DryRun = $script:ChkDryRun.Checked
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($chk in $picked) {
+        [void]$lines.Add($chk.Text)
+    }
+    [void]$lines.Add("")
+    [void]$lines.Add("Close Brave if it is open so search and the extension apply.")
+    [void]$lines.Add("Proton sign-in, PIN, and Sync stay manual.")
+    $detail = ($lines -join "`n")
+    if (-not (Show-ConfirmationDialog -Title "Apply Brave settings" -SelectedCount $picked.Count -ActionType "apply" -IsDryRun $script:DryRun -Detail $detail)) {
+        return
+    }
+    if (-not (Test-BraveInstalled)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Brave was not found on this PC. This tab enables when brave.exe is on disk.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        Update-BraveTabState
+        return
+    }
+    Set-ButtonDisabled -Button $script:BtnBraveApply -WorkingText "Applying..."
+    try {
+        Update-Progress -Current 1 -Total 1 -CurrentItem "Brave policies"
+        $groups = @($picked | ForEach-Object { [string]$_.Tag })
+        $ok = Set-BraveHkcuPolicies -Groups $groups
+        Hide-Progress
+        $dry = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        if ($ok) {
+            Update-Status "${dry}Brave settings applied. Close Brave if it is running."
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Information
+            $box = "${dry}Brave settings applied.`n`nLog: $script:LogPath"
+        }
+        else {
+            Update-Status "${dry}Brave settings finished with errors. See log."
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Warning
+            $box = "${dry}Brave settings finished with errors.`n`nLog: $script:LogPath"
+        }
+        [System.Windows.Forms.MessageBox]::Show(
+            $box,
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            $icon
+        )
+    }
+    catch {
+        Write-Log "Brave apply error: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Brave", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        Hide-Progress
+        Set-ButtonEnabled -Button $script:BtnBraveApply
+        $script:DryRun = $false
+        Update-BraveTabState
+    }
+})
+$BravePanel.Controls.Add($script:BtnBraveApply)
+$braveY += $script:UI.ButtonHeight + $script:UI.SectionSpacing
+
+$braveY = New-SectionHeader -Panel $BravePanel -Text "Profiles" -YPosition $braveY
+
+$script:BtnBraveShortcuts = New-Object System.Windows.Forms.Button
+$script:BtnBraveShortcuts.Text = "Create &profile shortcuts"
+$script:BtnBraveShortcuts.Location = New-Object System.Drawing.Point(20, $braveY)
+$script:BtnBraveShortcuts.Size = New-Object System.Drawing.Size(200, $script:UI.ButtonHeight)
+$script:MainTooltip.SetToolTip($script:BtnBraveShortcuts, "Writes Brave <name> shortcuts for existing profiles. Open Brave and name profiles first. (Alt+P)")
+$script:BtnBraveShortcuts.Add_Click({
+    $exe = Get-BraveInstallPath
+    if ([string]::IsNullOrWhiteSpace($exe) -or -not (Test-Path -LiteralPath $exe)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Brave was not found on this PC. This tab enables when brave.exe is on disk.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        Update-BraveTabState
+        return
+    }
+    $profs = @()
+    try {
+        $ls = Join-Path (Get-BraveUserDataDir) "Local State"
+        if (Test-Path -LiteralPath $ls) {
+            $raw = Get-Content -LiteralPath $ls -Raw -ErrorAction Stop
+            $profs = @(Get-BraveProfilesForShortcuts -LocalStateJson $raw)
+        }
+    }
+    catch {
+        $profs = @()
+    }
+    if ($profs.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Open Brave, create and name profiles, then retry.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        return
+    }
+    $script:DryRun = $script:ChkDryRun.Checked
+    $planNames = @(Get-BraveUniqueShortcutNames -Profiles $profs)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $planNames) {
+        [void]$lines.Add("$($item.FileName).lnk -> --profile-directory=`"$($item.Id)`"")
+    }
+    $detail = ($lines -join "`n")
+    if (-not (Show-ConfirmationDialog -Title "Create profile shortcuts" -SelectedCount $planNames.Count -ActionType "create" -IsDryRun $script:DryRun -Detail $detail)) {
+        return
+    }
+    $exe = Get-BraveInstallPath
+    if ([string]::IsNullOrWhiteSpace($exe) -or -not (Test-Path -LiteralPath $exe)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Brave was not found on this PC. This tab enables when brave.exe is on disk.",
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        Update-BraveTabState
+        return
+    }
+    Set-ButtonDisabled -Button $script:BtnBraveShortcuts -WorkingText "Creating..."
+    try {
+        Update-Progress -Current 1 -Total 1 -CurrentItem "Brave shortcuts"
+        $ok = New-BraveProfileShortcuts -DesktopDir ([Environment]::GetFolderPath("Desktop")) -BraveExe $exe -Profiles $profs
+        Hide-Progress
+        $dry = if ($script:DryRun) { "[DRY RUN] " } else { "" }
+        if ($ok) {
+            Update-Status "${dry}Brave profile shortcuts created."
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Information
+            $box = "${dry}Brave profile shortcuts created.`n`nLog: $script:LogPath"
+        }
+        else {
+            Update-Status "${dry}Brave shortcuts finished with errors. See log."
+            $icon = [System.Windows.Forms.MessageBoxIcon]::Warning
+            $box = "${dry}Brave shortcuts finished with errors.`n`nLog: $script:LogPath"
+        }
+        [System.Windows.Forms.MessageBox]::Show(
+            $box,
+            "Brave",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            $icon
+        )
+    }
+    catch {
+        Write-Log "Brave shortcuts error: $_" "ERROR"
+        [System.Windows.Forms.MessageBox]::Show("Error: $_", "Brave", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    finally {
+        Hide-Progress
+        Set-ButtonEnabled -Button $script:BtnBraveShortcuts
+        $script:DryRun = $false
+        Update-BraveTabState
+    }
+})
+$BravePanel.Controls.Add($script:BtnBraveShortcuts)
+Update-BraveTabState
+
+$TabBrave.Controls.Add($BravePanel)
+
+# ============================================================================
+# TAB 5: HARDEN
 # ============================================================================
 
 $TabHarden = New-Object System.Windows.Forms.TabPage
@@ -3413,7 +4036,7 @@ $HardenPanel.Controls.Add($script:BtnHardenUnlock)
 $TabHarden.Controls.Add($HardenPanel)
 
 # ============================================================================
-# TAB 5: SYSTEM REPAIR
+# TAB 6: SYSTEM REPAIR
 # ============================================================================
 
 $TabRepair = New-Object System.Windows.Forms.TabPage
@@ -3790,8 +4413,13 @@ $TabRepair.Controls.Add($RepairPanel)
 # ADD TABS TO TAB CONTROL
 # ============================================================================
 
-$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps, $TabHarden, $TabRepair))
+$TabControl.Controls.AddRange(@($TabBloatware, $TabSettings, $TabInstallApps, $TabBrave, $TabHarden, $TabRepair))
 $MainForm.Controls.Add($TabControl)
+$TabControl.Add_SelectedIndexChanged({
+    if ($TabControl.SelectedTab -eq $TabBrave) {
+        Update-BraveTabState
+    }
+})
 
 # ============================================================================
 # BOTTOM CONTROLS
@@ -3858,7 +4486,7 @@ $MainForm.Controls.Add($script:StatusLabel)
 
 # Version and help info
 $LblVersion = New-Object System.Windows.Forms.Label
-$LblVersion.Text = "v2.4 | Shortcuts: Alt+R (Remove/Repair), Alt+A (Apply), Alt+H (Harden), Alt+U (Unlock), Alt+I (Install), Alt+Y (Dry Run)"
+$LblVersion.Text = "v2.6 | Alt+R Remove  Alt+A Settings  Alt+H Harden  Alt+U Unlock  Alt+I Install  Alt+B Brave  Alt+P Shortcuts  Alt+Y Dry Run"
 $LblVersion.Location = New-Object System.Drawing.Point(10, 530)
 $LblVersion.Size = New-Object System.Drawing.Size(665, 18)
 $LblVersion.ForeColor = $script:UI.SubtleGray
